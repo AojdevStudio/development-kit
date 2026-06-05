@@ -1,9 +1,8 @@
-<!-- CODEGRAPH_START -->
-## CodeGraph
+# CodeGraph
 
 This project has a CodeGraph MCP server (`codegraph_*` tools) configured. CodeGraph is a tree-sitter-parsed knowledge graph of every symbol, edge, and file. Reads are sub-millisecond and return structural information grep cannot.
 
-### When to prefer codegraph over native search
+## When to prefer codegraph over native search
 
 Use codegraph for **structural** questions — what calls what, what would break, where is X defined, what is X's signature. Use native grep/read only for **literal text** queries (string contents, comments, log messages) or after you already have a specific file open.
 
@@ -20,7 +19,7 @@ Use codegraph for **structural** questions — what calls what, what would break
 | "What files exist under path/" | `codegraph_files` |
 | "Is the index healthy?" | `codegraph_status` |
 
-### Rules of thumb
+## Rules of thumb
 
 - **Answer directly — don't delegate exploration.** For "how does X work" / architecture questions, answer with 2-3 codegraph calls: `codegraph_context` first, then ONE `codegraph_explore` for the source of the symbols it surfaces. For a specific **flow** ("how does X reach Y") start with `codegraph_trace` from→to — one call returns the whole path with dynamic hops bridged — then ONE `codegraph_explore` for the bodies; don't rebuild the path with `codegraph_search` + `codegraph_callers`. Codegraph IS the pre-built index, so spawning a separate file-reading sub-task/agent — or running a grep + read loop — repeats work codegraph already did and costs more for the same answer.
 - **Trust codegraph results.** They come from a full AST parse. Do NOT re-verify them with grep — that's slower, less accurate, and wastes context.
@@ -29,7 +28,10 @@ Use codegraph for **structural** questions — what calls what, what would break
 - **Don't loop `codegraph_node` over many symbols** — one `codegraph_explore` call returns several symbols' source grouped in a single capped call, while each separate node/Read call re-reads the whole context and costs far more.
 - **Index lag — check the staleness banner, don't guess a wait.** When a codegraph response starts with "⚠️ Some files referenced below were edited since the last index sync…", the listed files are pending re-index — Read those specific files for accurate content. Files NOT in that banner are fresh and codegraph is authoritative for them. `codegraph_status` also lists pending files under "Pending sync".
 
-### If `.codegraph/` doesn't exist
+## Git rules
+
+Only commit `.codegraph/.gitignore`. Everything else under `.codegraph/` is local runtime data (database, cache, logs, daemon files) and must stay untracked. Do not add `codegraph.db`, `daemon.pid`, `daemon.sock`, or other generated files to git.
+
+## If `.codegraph/` doesn't exist
 
 The MCP server returns "not initialized." Ask the user: *"I notice this project doesn't have CodeGraph initialized. Want me to run `codegraph init -i` to build the index?"*
-<!-- CODEGRAPH_END -->
