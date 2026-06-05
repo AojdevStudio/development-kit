@@ -1,0 +1,13 @@
+[package]
+name = "license-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Public-key license-token VERIFICATION. Desktop-safe — holds no private key (ADR-0002)."
+
+[dependencies]
+shared = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

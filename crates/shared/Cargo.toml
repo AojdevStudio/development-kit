@@ -1,0 +1,15 @@
+[package]
+name = "shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure shared types for the platform spine: feature keys, entitlement and license-token DTOs. No heavy deps (ADR-0002)."
+
+[dependencies]
+serde = { workspace = true }
+# serde_json is the canonical encoder for LicenseToken::signing_bytes — the one
+# place the signed byte format is defined, so the sign and verify crates cannot
+# disagree. It is a lightweight (de)serializer, not one of the authority-bearing
+# deps ADR-0002 bans from this crate (sqlx, Stripe, secret loaders).
+serde_json = { workspace = true }

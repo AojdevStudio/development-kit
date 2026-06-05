@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shared",
+    "crates/license-verify",
+    "crates/license-sign",
+    "services/api",
+    "apps/desktop/src-tauri",
+    "xtask",
+]
+
+# Keep the desktop app self-contained for bundling, but it is part of the
+# workspace so the dependency graph (ADR-0002) is verified in one place.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.82"
+
+[workspace.dependencies]
+# Capability crates are the contract surface (ADR-0002).
+shared = { path = "crates/shared" }
+license-verify = { path = "crates/license-verify" }
+license-sign = { path = "crates/license-sign" }
+
+# Pinned to versions verified against crates.io on 2026-06-05.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-dalek = { version = "2", default-features = false }
+thiserror = "2"
+
+# Cloud API stack (services/api only — never the desktop tree).
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[profile.release]
+strip = true

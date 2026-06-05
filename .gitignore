@@ -4,3 +4,21 @@
 
 # OS noise
 .DS_Store
+
+# Rust
+/target
+**/target
+
+# Node / frontend
+node_modules
+apps/desktop/dist
+apps/desktop/.vite
+
+# Tauri generated
+apps/desktop/src-tauri/gen
+apps/desktop/src-tauri/target
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
