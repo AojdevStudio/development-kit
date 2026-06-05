@@ -1,0 +1,21 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The single gate runner. Orchestrates every check and mechanically verifies the ADR-0002 crate-dependency edges."
+publish = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[lib]
+name = "xtask"
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned to 0.18: newer cargo_metadata pulls cargo-platform 0.3 which requires
+# rustc 1.91; this repo targets the pinned stable toolchain (rust-version 1.82).
+cargo_metadata = "0.18"

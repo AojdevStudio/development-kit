@@ -1,0 +1,28 @@
+[package]
+name = "api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Cloud Rust/Axum backend: the SaaS authority (identity, entitlements, billing, license issuance)."
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[lib]
+name = "api"
+path = "src/lib.rs"
+
+[dependencies]
+shared = { workspace = true }
+# Backend-only: holds the private signing key. Compile-fact proof that license
+# issuance lives here, not on the desktop (ADR-0002).
+license-sign = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+http-body-util = { workspace = true }

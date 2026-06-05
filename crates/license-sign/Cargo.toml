@@ -1,0 +1,17 @@
+[package]
+name = "license-sign"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Private-key license-token SIGNING. Backend-only — never compiled into the desktop tree (ADR-0002)."
+
+[dependencies]
+shared = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
+license-verify = { workspace = true }

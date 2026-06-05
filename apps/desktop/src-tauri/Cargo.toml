@@ -1,0 +1,27 @@
+[package]
+name = "desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Tauri v2 desktop shell. Runs the product experience and VERIFIES license tokens — never issues them, never reaches the database (ADR-0002)."
+
+[lib]
+name = "desktop_lib"
+# All three crate types are required for Tauri's desktop + (future) mobile builds.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ADR-0002: the desktop tree may depend on `shared` + `license-verify` ONLY.
+# `license-sign`, `sqlx`, and Stripe are deliberately absent — that absence is
+# the compile-time proof that the client can never issue licenses, reach
+# Postgres, or hold billing secrets.
+shared = { workspace = true }
+license-verify = { workspace = true }
+
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
