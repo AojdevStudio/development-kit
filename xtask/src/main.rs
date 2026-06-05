@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use xtask::check_dependency_edges;
+use xtask::leakscan;
 use xtask::registry::{Check, CheckRegistry, GateOutcome, Scope};
 
 fn main() -> ExitCode {
@@ -57,7 +58,7 @@ fn print_help() {
          frontend  Bun lint + type-check + build\n  \
          db        database/migration checks (registered by later issues)\n  \
          billing   Stripe/billing checks (registered by later issues)\n  \
-         security  ADR-0002 compile-time authority-boundary edge check\n  \
+         security  ADR-0002 edge check + desktop leak scan (source + artifact)\n  \
          prd       PRD intake / sample-product checks (registered by later issues)\n"
     );
 }
@@ -163,6 +164,11 @@ fn build_registry() -> CheckRegistry {
             "frontend lint/type/build (bun)",
             [Scope::Frontend, Scope::Desktop],
             Box::new(frontend_step),
+        ))
+        .register(Check::new(
+            "leak scan (desktop source + built artifact)",
+            [Scope::Security, Scope::Desktop],
+            Box::new(leak_scan_step),
         ));
 
     registry
@@ -211,6 +217,56 @@ fn frontend_step() -> Result<(), String> {
     run_in(&frontend_dir, "bun", &["run", "typecheck"])?;
     run_in(&frontend_dir, "bun", &["run", "build"])?;
     Ok(())
+}
+
+/// Leak-scan step (issue #24): no Stripe/DB/webhook/signing secret may reach the
+/// desktop tree (ADR-0001/0002). Scans the desktop *source* tree and the *built
+/// debug artifact*; any planted sensitive value fails the gate. Complements the
+/// crate-edge check — that proves the *capability* to reach secrets is absent;
+/// this proves no *literal* value slipped through anyway.
+fn leak_scan_step() -> Result<(), String> {
+    let root = workspace_root();
+    let mut findings = Vec::new();
+
+    // 1) Desktop source tree (Rust + frontend + config).
+    let desktop_dir = root.join("apps/desktop");
+    if desktop_dir.exists() {
+        findings.extend(leakscan::scan_directory(&desktop_dir));
+    }
+
+    // 2) Built debug artifact. Build the desktop crate's debug binary, then scan
+    //    it. A missing binary (build skipped/unavailable) is reported, not
+    //    silently passed — the artifact half of the scan must actually run.
+    cargo(&["build", "-p", "desktop"])
+        .map_err(|e| format!("could not build the desktop debug artifact to scan it: {e}"))?;
+    let artifact = root.join("target/debug").join(desktop_binary_name());
+    if artifact.exists() {
+        findings.extend(leakscan::scan_artifact(&artifact));
+    } else {
+        return Err(format!(
+            "expected desktop debug artifact at {} but it was not produced",
+            artifact.display()
+        ));
+    }
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "sensitive values must never ship in the desktop app (ADR-0001):\n{}",
+            leakscan::report_findings(&findings)
+        ))
+    }
+}
+
+/// The desktop debug binary's filename, platform-adjusted. The `desktop` crate
+/// produces an executable named after the package.
+fn desktop_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "desktop.exe"
+    } else {
+        "desktop"
+    }
 }
 
 fn cargo(args: &[&str]) -> Result<(), String> {
