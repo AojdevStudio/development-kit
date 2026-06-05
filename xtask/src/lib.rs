@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod edges;
+pub mod registry;
 
 use std::collections::BTreeSet;
 
