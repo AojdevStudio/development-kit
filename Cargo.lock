@@ -4732,6 +4732,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata 0.18.1",
+ "shared",
 ]
 
 [[package]]

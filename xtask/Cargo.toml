@@ -19,3 +19,7 @@ path = "src/lib.rs"
 # Pinned to 0.18: newer cargo_metadata pulls cargo-platform 0.3 which requires
 # rustc 1.91; this repo targets the pinned stable toolchain (rust-version 1.82).
 cargo_metadata = "0.18"
+# The feature-key coverage gate (issue #25) enumerates FeatureKey::ALL, so it
+# depends on the shared contract crate. shared is a pure, dependency-thin types
+# crate (ADR-0002), so this does not drag authority-bearing deps into xtask.
+shared = { workspace = true }

@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod coverage;
 pub mod edges;
 pub mod registry;
 

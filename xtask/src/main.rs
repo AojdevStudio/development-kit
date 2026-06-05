@@ -56,7 +56,7 @@ fn print_help() {
          api       api crate tests\n  \
          frontend  Bun lint + type-check + build\n  \
          db        database/migration checks (registered by later issues)\n  \
-         billing   Stripe/billing checks (registered by later issues)\n  \
+         billing   feature-key coverage gate (+ Stripe/billing checks from later issues)\n  \
          security  ADR-0002 compile-time authority-boundary edge check\n  \
          prd       PRD intake / sample-product checks (registered by later issues)\n"
     );
@@ -163,6 +163,11 @@ fn build_registry() -> CheckRegistry {
             "frontend lint/type/build (bun)",
             [Scope::Frontend, Scope::Desktop],
             Box::new(frontend_step),
+        ))
+        .register(Check::new(
+            "feature-key coverage (every paid key has a non-React gate test)",
+            [Scope::Billing, Scope::Security],
+            Box::new(xtask::coverage::run_feature_key_coverage),
         ));
 
     registry

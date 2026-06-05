@@ -11,10 +11,14 @@
 use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
 
+pub mod feature_gate;
+
 /// Build the application router. Kept separate from `serve` so tests can drive
 /// it via `tower::ServiceExt::oneshot` without a network listener.
 pub fn app() -> Router {
-    Router::new().route("/health", get(health))
+    Router::new()
+        .route("/health", get(health))
+        .merge(feature_gate::router())
 }
 
 /// Liveness probe. Returns 200 with a small JSON body. No auth — this is the
