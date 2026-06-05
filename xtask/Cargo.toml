@@ -19,3 +19,7 @@ path = "src/lib.rs"
 # Pinned to 0.18: newer cargo_metadata pulls cargo-platform 0.3 which requires
 # rustc 1.91; this repo targets the pinned stable toolchain (rust-version 1.82).
 cargo_metadata = "0.18"
+# Parses the desktop `deny.toml` so the gate can prove the checked-in cargo-deny
+# config still bans every crate the canonical Rust ban list requires (issue #23).
+# Default features only need the parser; `parse` is in the default feature set.
+toml = { version = "0.8", default-features = false, features = ["parse"] }
