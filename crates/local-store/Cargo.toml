@@ -1,0 +1,19 @@
+[package]
+name = "local-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Local SQLite data service for the desktop app. Runs migrations, exposes typed repositories for local product state. Never stores authoritative billing state (ADR-0001/0002)."
+
+[dependencies]
+# rusqlite: synchronous SQLite access — the right choice for the client-side
+# local store. The desktop app has no async runtime at the data layer; blocking
+# I/O to a local file is fast enough and avoids tokio in this crate.
+# `bundled` compiles SQLite from source so the binary ships its own SQLite version.
+rusqlite = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
