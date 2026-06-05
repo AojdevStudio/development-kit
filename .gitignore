@@ -1,0 +1,6 @@
+# Runtime / process files
+*.pid
+.codegraph/daemon.pid
+
+# OS noise
+.DS_Store
