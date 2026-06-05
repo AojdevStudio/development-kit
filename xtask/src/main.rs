@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use xtask::check_dependency_edges;
 use xtask::registry::{Check, CheckRegistry, GateOutcome, Scope};
+use xtask::{check_dependency_edges, run_bans_check};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -52,12 +52,12 @@ fn print_help() {
          cargo xtask edges\n\n\
          SCOPES: {scopes}\n  \
          all       every registered check (default)\n  \
-         desktop   desktop crate edges + frontend\n  \
+         desktop   desktop crate edges + cargo-deny bans + frontend\n  \
          api       api crate tests\n  \
          frontend  Bun lint + type-check + build\n  \
          db        database/migration checks (registered by later issues)\n  \
          billing   Stripe/billing checks (registered by later issues)\n  \
-         security  ADR-0002 compile-time authority-boundary edge check\n  \
+         security  ADR-0002 edge check + cargo-deny desktop supply-chain bans\n  \
          prd       PRD intake / sample-product checks (registered by later issues)\n"
     );
 }
@@ -163,6 +163,11 @@ fn build_registry() -> CheckRegistry {
             "frontend lint/type/build (bun)",
             [Scope::Frontend, Scope::Desktop],
             Box::new(frontend_step),
+        ))
+        .register(Check::new(
+            "cargo-deny desktop bans (#23)",
+            [Scope::Desktop, Scope::Security],
+            Box::new(run_bans_check),
         ));
 
     registry

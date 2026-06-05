@@ -48,5 +48,10 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
       - name: Run gate
         run: cargo xtask gate --scope all
