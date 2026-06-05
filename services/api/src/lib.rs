@@ -8,13 +8,27 @@
 
 #![forbid(unsafe_code)]
 
-use axum::{routing::get, Json, Router};
+pub mod license;
+
+use axum::{routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
+
+use crate::license::LicenseState;
 
 /// Build the application router. Kept separate from `serve` so tests can drive
 /// it via `tower::ServiceExt::oneshot` without a network listener.
 pub fn app() -> Router {
     Router::new().route("/health", get(health))
+}
+
+/// Build the router including the authority routes that need backend state —
+/// currently `POST /license/refresh`, which signs short-lived tokens with the
+/// backend key held in [`LicenseState`].
+pub fn app_with_license(license: LicenseState) -> Router {
+    app().route(
+        "/license/refresh",
+        post(license::refresh).with_state(license),
+    )
 }
 
 /// Liveness probe. Returns 200 with a small JSON body. No auth — this is the
