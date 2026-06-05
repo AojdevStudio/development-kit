@@ -1,24 +1,31 @@
 //! `cargo xtask gate [--scope <scope>]` — the single gate runner (ADR-0002).
 //!
-//! Scopes select a slice of the full gate. The walking skeleton implements the
-//! checks that exist today; later issues extend `run_gate` with cargo-deny,
-//! secret-scan, migrations, webhook fixtures, and the feature-key coverage gate
-//! without changing how the gate is invoked.
+//! The gate is an *extensible check registry* (issue #22): every check is
+//! registered once, tagged with the scopes it belongs to, and the runner
+//! selects checks by scope. Adding cargo-deny, a secret scan, migration checks,
+//! webhook fixtures, or the feature-key coverage gate later is a one-line
+//! `register(...)` call in `build_registry` — the runner, the scope vocabulary,
+//! and the CLI surface are untouched.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use xtask::check_dependency_edges;
+use xtask::registry::{Check, CheckRegistry, GateOutcome, Scope};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let command = args.first().map(String::as_str);
     match command {
-        Some("gate") => {
-            let scope = parse_scope(&args[1..]);
-            run_gate(&scope)
-        }
+        Some("gate") => match parse_scope(&args[1..]) {
+            Ok(scope) => run_gate(scope),
+            Err(e) => {
+                eprintln!("{e}\n");
+                print_help();
+                ExitCode::FAILURE
+            }
+        },
         Some("edges") => run_edges(),
         Some("help") | Some("--help") | Some("-h") | None => {
             print_help();
@@ -33,117 +40,132 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
+    let scopes = Scope::ALL
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join("|");
     eprintln!(
         "xtask — the platform-spine gate runner\n\n\
          USAGE:\n  \
          cargo xtask gate [--scope <scope>]\n  \
          cargo xtask edges\n\n\
-         SCOPES:\n  \
-         all       fmt + clippy + workspace tests + edges + frontend (default)\n  \
-         rust      fmt + clippy + workspace tests + edges\n  \
-         edges     ADR-0002 crate-dependency edge check only\n  \
-         frontend  Bun lint + type-check + build (desktop frontend)\n  \
-         desktop   desktop crate check + frontend\n  \
-         api       api crate check + tests\n  \
-         security  ADR-0002 edge check (compile-time authority boundary)\n"
+         SCOPES: {scopes}\n  \
+         all       every registered check (default)\n  \
+         desktop   desktop crate edges + frontend\n  \
+         api       api crate tests\n  \
+         frontend  Bun lint + type-check + build\n  \
+         db        database/migration checks (registered by later issues)\n  \
+         billing   Stripe/billing checks (registered by later issues)\n  \
+         security  ADR-0002 compile-time authority-boundary edge check\n  \
+         prd       PRD intake / sample-product checks (registered by later issues)\n"
     );
 }
 
-fn parse_scope(args: &[String]) -> String {
+/// Parse the `--scope <value>` (or `--scope=<value>`) flag, defaulting to
+/// `all`. An unknown scope is a hard error so a typo never silently runs an
+/// empty gate.
+fn parse_scope(args: &[String]) -> Result<Scope, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--scope" {
             if let Some(value) = iter.next() {
-                return value.clone();
+                return Scope::parse(value);
             }
+            return Err("--scope requires a value".to_string());
         } else if let Some(value) = arg.strip_prefix("--scope=") {
-            return value.to_string();
+            return Scope::parse(value);
         }
     }
-    "all".to_string()
+    Ok(Scope::All)
 }
 
-/// A single named step in the gate. Steps fail loudly and the gate aggregates
-/// the result so one red check does not mask others.
-struct Step {
-    name: &'static str,
-    run: Box<dyn Fn() -> Result<(), String>>,
-}
+/// Run the gate for the selected scope. The runner is scope-agnostic: it builds
+/// the registry, selects by scope, runs the slice, and aggregates failures.
+fn run_gate(scope: Scope) -> ExitCode {
+    let registry = build_registry();
+    let selected = registry.select(scope);
 
-fn run_gate(scope: &str) -> ExitCode {
-    let steps = steps_for_scope(scope);
-    if steps.is_empty() {
-        eprintln!("unknown scope: {scope}\n");
-        print_help();
-        return ExitCode::FAILURE;
+    println!(
+        "== xtask gate (scope: {}, {} check(s)) ==",
+        scope.as_str(),
+        selected.len()
+    );
+    for check in &selected {
+        println!("  - {}", check.name);
     }
 
-    let mut failures: Vec<String> = Vec::new();
-    println!("== xtask gate (scope: {scope}) ==");
-    for step in steps {
-        println!("\n--> {}", step.name);
-        match (step.run)() {
-            Ok(()) => println!("    ok: {}", step.name),
-            Err(e) => {
-                eprintln!("    FAIL: {}: {e}", step.name);
-                failures.push(step.name.to_string());
-            }
+    let outcome = GateOutcome::run(&selected);
+    for result in &outcome.results {
+        match &result.outcome {
+            Ok(()) => println!("\n--> {} ... ok", result.name),
+            Err(e) => eprintln!("\n--> {} ... FAIL\n    {e}", result.name),
         }
     }
 
     println!();
-    if failures.is_empty() {
-        println!("gate PASSED (scope: {scope})");
+    if outcome.passed() {
+        println!("gate PASSED (scope: {})", scope.as_str());
         ExitCode::SUCCESS
     } else {
-        eprintln!("gate FAILED (scope: {scope}): {}", failures.join(", "));
+        eprintln!(
+            "gate FAILED (scope: {}): {}",
+            scope.as_str(),
+            outcome.failures().join(", ")
+        );
         ExitCode::FAILURE
     }
 }
 
-fn steps_for_scope(scope: &str) -> Vec<Step> {
-    let fmt = || Step {
-        name: "cargo fmt --check",
-        run: Box::new(|| cargo(&["fmt", "--all", "--", "--check"])),
-    };
-    let clippy = || Step {
-        name: "cargo clippy -D warnings",
-        run: Box::new(|| {
-            cargo(&[
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ])
-        }),
-    };
-    let tests = || Step {
-        name: "cargo test --workspace",
-        run: Box::new(|| cargo(&["test", "--workspace"])),
-    };
-    let edges = || Step {
-        name: "ADR-0002 crate-edge check",
-        run: Box::new(edges_step),
-    };
-    let frontend = || Step {
-        name: "frontend lint/type/build (bun)",
-        run: Box::new(frontend_step),
-    };
+/// Build the registry of every check the gate knows about. **This is the one
+/// place a future issue adds a check** — register it with the scopes it belongs
+/// to and the runner picks it up automatically.
+///
+/// Checks tagged with multiple scopes run under each of them (and always under
+/// `all`). The Rust toolchain checks (fmt/clippy/tests) span the whole
+/// workspace, so they belong to every Rust-bearing slice.
+fn build_registry() -> CheckRegistry {
+    let mut registry = CheckRegistry::new();
 
-    match scope {
-        "all" => vec![fmt(), clippy(), tests(), edges(), frontend()],
-        "rust" => vec![fmt(), clippy(), tests(), edges()],
-        "edges" | "security" => vec![edges()],
-        "frontend" => vec![frontend()],
-        "desktop" => vec![edges(), frontend()],
-        "api" => vec![Step {
-            name: "cargo test -p api",
-            run: Box::new(|| cargo(&["test", "-p", "api"])),
-        }],
-        _ => vec![],
-    }
+    registry
+        .register(Check::new(
+            "cargo fmt --check",
+            [Scope::Desktop, Scope::Api, Scope::Security],
+            Box::new(|| cargo(&["fmt", "--all", "--", "--check"])),
+        ))
+        .register(Check::new(
+            "cargo clippy -D warnings",
+            [Scope::Desktop, Scope::Api, Scope::Security],
+            Box::new(|| {
+                cargo(&[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ])
+            }),
+        ))
+        .register(Check::new(
+            "cargo test --workspace",
+            [Scope::Desktop, Scope::Api],
+            Box::new(|| cargo(&["test", "--workspace"])),
+        ))
+        .register(Check::new(
+            "ADR-0002 crate-edge check",
+            // The authority-boundary check is the heart of the `security` slice
+            // and also guards the `desktop`/`api` boundaries directly.
+            [Scope::Security, Scope::Desktop, Scope::Api],
+            Box::new(edges_step),
+        ))
+        .register(Check::new(
+            "frontend lint/type/build (bun)",
+            [Scope::Frontend, Scope::Desktop],
+            Box::new(frontend_step),
+        ));
+
+    registry
 }
 
 fn run_edges() -> ExitCode {
