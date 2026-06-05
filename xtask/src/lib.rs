@@ -11,6 +11,7 @@
 
 pub mod bans;
 pub mod edges;
+pub mod leakscan;
 pub mod registry;
 
 use std::collections::BTreeSet;
