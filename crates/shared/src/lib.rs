@@ -8,10 +8,14 @@
 
 #![forbid(unsafe_code)]
 
+mod dto;
 mod entitlements;
 mod feature_key;
 mod license;
+mod plan;
 
+pub use dto::{EntitlementsResponse, LicenseRefreshRequest, LicenseRefreshResponse};
 pub use entitlements::{Entitlements, FeatureValue};
 pub use feature_key::FeatureKey;
 pub use license::LicenseToken;
+pub use plan::{PlanTier, SubscriptionStatus};
