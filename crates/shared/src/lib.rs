@@ -8,10 +8,12 @@
 
 #![forbid(unsafe_code)]
 
+mod audit;
 mod entitlements;
 mod feature_key;
 mod license;
 
+pub use audit::{ActorKind, AuditEvent, Sensitivity};
 pub use entitlements::{Entitlements, FeatureValue};
 pub use feature_key::FeatureKey;
 pub use license::LicenseToken;
