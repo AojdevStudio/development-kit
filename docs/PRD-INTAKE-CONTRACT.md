@@ -40,7 +40,7 @@ Acceptance tests
 
 When a coding agent receives a product PRD, it must:
 
-1. Preserve the standard architecture split from `docs/tauri-stripe-saas-architecture.md`.
+1. Preserve the standard architecture split from `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md`.
 2. Treat the cloud Rust backend as the authority for identity, subscriptions, entitlements, and license issuance.
 3. Treat local SQLite as the durable local product-state store, not as the billing authority.
 4. Convert product tiers into explicit feature keys and limits.
