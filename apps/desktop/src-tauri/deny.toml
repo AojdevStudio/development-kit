@@ -1,0 +1,62 @@
+# cargo-deny configuration for the DESKTOP crate (issue #23).
+#
+# This is the supply-chain backstop for the ADR-0001 authority split: the
+# desktop client must never pull in a database client or a payment/Stripe client
+# crate — not directly, and not transitively behind some other dependency.
+#
+# The gate runs this rooted at the desktop manifest:
+#
+#     cargo deny --manifest-path apps/desktop/src-tauri/Cargo.toml \
+#       check bans --config apps/desktop/src-tauri/deny.toml
+#
+# Rooting at the desktop manifest is what scopes the bans to the *desktop tree
+# only*: the api crate's legitimate use of sqlx / Stripe is never analyzed here.
+#
+# This list is kept in lockstep with `xtask/src/bans.rs::DESKTOP_BANNED`. The
+# gate fails if the two drift (see `config_gaps`), so add a crate in BOTH places.
+
+# cargo-deny v2 splits graph construction out into its own table. Defaults are
+# fine for the desktop tree; we only analyze the default target triple.
+[graph]
+all-features = false
+
+# This issue is strictly a dependency-ban gate. Advisory, license, and source
+# checks are owned by other gate slices; keep them permissive here so the bans
+# check is the only thing this config asserts.
+[advisories]
+version = 2
+
+[licenses]
+version = 2
+# Do not fail the desktop bans gate on license policy — that is a separate
+# concern. An empty allow list with this confidence is non-fatal for `check bans`.
+allow = []
+confidence-threshold = 0.8
+
+[bans]
+# A duplicate-version or wildcard policy is out of scope for this gate; keep them
+# from turning the bans check red on unrelated grounds.
+multiple-versions = "allow"
+wildcards = "allow"
+# Workspace members are always allowed as graph roots.
+allow-workspace = true
+
+# The authority-split ban list. Each entry carries the reason a contributor sees
+# when the gate stops them. Database client crates: the desktop never reaches
+# Postgres. Payment client crates: billing is backend-only. license-sign: the
+# desktop verifies licenses, it never issues them.
+deny = [
+    { name = "sqlx", reason = "desktop must not reach Postgres; cloud authority only (ADR-0001)" },
+    { name = "sqlx-postgres", reason = "desktop must not reach Postgres; cloud authority only (ADR-0001)" },
+    { name = "tokio-postgres", reason = "desktop must not reach Postgres; cloud authority only (ADR-0001)" },
+    { name = "postgres", reason = "desktop must not reach Postgres; cloud authority only (ADR-0001)" },
+    { name = "diesel", reason = "desktop must not embed a Postgres ORM; cloud authority only (ADR-0001)" },
+    { name = "async-stripe", reason = "Stripe integration is backend-only; no billing on the client (ADR-0001)" },
+    { name = "stripe-rust", reason = "Stripe integration is backend-only; no billing on the client (ADR-0001)" },
+    { name = "stripe", reason = "Stripe integration is backend-only; no billing on the client (ADR-0001)" },
+    { name = "license-sign", reason = "desktop verifies licenses, never issues them (ADR-0001/ADR-0002)" },
+]
+
+[sources]
+unknown-registry = "allow"
+unknown-git = "allow"

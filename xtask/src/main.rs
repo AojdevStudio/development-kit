@@ -10,9 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use xtask::check_dependency_edges;
 use xtask::leakscan;
 use xtask::registry::{Check, CheckRegistry, GateOutcome, Scope};
+use xtask::{check_dependency_edges, run_bans_check};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -53,12 +53,12 @@ fn print_help() {
          cargo xtask edges\n\n\
          SCOPES: {scopes}\n  \
          all       every registered check (default)\n  \
-         desktop   desktop crate edges + frontend\n  \
+         desktop   desktop crate edges + cargo-deny bans + frontend\n  \
          api       api crate tests\n  \
          frontend  Bun lint + type-check + build\n  \
          db        database/migration checks (registered by later issues)\n  \
          billing   Stripe/billing checks (registered by later issues)\n  \
-         security  ADR-0002 edge check + desktop leak scan (source + artifact)\n  \
+         security  ADR-0002 edge check + cargo-deny desktop supply-chain bans + leak scan (source + artifact)\n  \
          prd       PRD intake / sample-product checks (registered by later issues)\n"
     );
 }
@@ -166,6 +166,11 @@ fn build_registry() -> CheckRegistry {
             Box::new(frontend_step),
         ))
         .register(Check::new(
+            "cargo-deny desktop bans (#23)",
+            [Scope::Desktop, Scope::Security],
+            Box::new(run_bans_check),
+        ))
+        .register(Check::new(
             "leak scan (desktop source + built artifact)",
             [Scope::Security, Scope::Desktop],
             Box::new(leak_scan_step),
@@ -215,6 +220,7 @@ fn frontend_step() -> Result<(), String> {
         .or_else(|_| run_in(&frontend_dir, "bun", &["install"]))?;
     run_in(&frontend_dir, "bun", &["run", "lint"])?;
     run_in(&frontend_dir, "bun", &["run", "typecheck"])?;
+    run_in(&frontend_dir, "bun", &["run", "test"])?;
     run_in(&frontend_dir, "bun", &["run", "build"])?;
     Ok(())
 }

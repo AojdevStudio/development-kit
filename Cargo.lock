@@ -66,6 +66,7 @@ dependencies = [
  "axum",
  "http-body-util",
  "license-sign",
+ "serde",
  "serde_json",
  "shared",
  "tokio",
@@ -4857,6 +4858,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata 0.18.1",
+ "toml 0.8.2",
 ]
 
 [[package]]
