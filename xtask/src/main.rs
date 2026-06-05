@@ -214,6 +214,7 @@ fn frontend_step() -> Result<(), String> {
         .or_else(|_| run_in(&frontend_dir, "bun", &["install"]))?;
     run_in(&frontend_dir, "bun", &["run", "lint"])?;
     run_in(&frontend_dir, "bun", &["run", "typecheck"])?;
+    run_in(&frontend_dir, "bun", &["run", "test"])?;
     run_in(&frontend_dir, "bun", &["run", "build"])?;
     Ok(())
 }

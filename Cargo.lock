@@ -66,6 +66,7 @@ dependencies = [
  "axum",
  "http-body-util",
  "license-sign",
+ "serde",
  "serde_json",
  "shared",
  "tokio",
