@@ -2,25 +2,28 @@
 //!
 //! Exposes the public health route and the first authenticated authority
 //! surface, `GET /me` (issue #27), which resolves who is calling and which
-//! account they belong to. The remaining surfaces declared in
-//! `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md` (`/me/entitlements`, `/billing/*`,
-//! `/stripe/webhook`, `/license/*`) land in their own issues. The router is
-//! built as a pure value so it can be exercised in tests without binding a
-//! socket.
+//! account they belong to, plus `POST /license/refresh` (issue #28), which
+//! mints short-lived signed license tokens for offline paid access. The
+//! remaining surfaces declared in `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md`
+//! (`/me/entitlements`, `/billing/*`, `/stripe/webhook`) land in their own
+//! issues. The router is built as a pure value so it can be exercised in tests
+//! without binding a socket.
 
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod license;
 pub mod me;
 pub mod principal;
 pub mod store;
 
 use std::sync::Arc;
 
-use axum::{routing::get, Json, Router};
+use axum::{routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
 
 use crate::auth::PrincipalStore;
+use crate::license::LicenseState;
 use crate::me::{get_me, AuthState};
 
 /// Build the application router with a caller-supplied principal store. Kept
@@ -40,6 +43,19 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// desktop dev build can load the current account end-to-end (issue #27).
 pub fn app() -> Router {
     app_with_store(Arc::new(store::InMemoryPrincipalStore::dev_seed()))
+}
+
+/// Build the router including the authority routes that need backend state —
+/// the auth-backed `GET /me` (via the dev store) plus `POST /license/refresh`,
+/// which signs short-lived tokens with the backend key held in [`LicenseState`].
+///
+/// `/license/refresh` carries its own [`LicenseState`]; `/me` keeps the auth
+/// state applied in [`app`]. Both routes are mounted — neither is dropped.
+pub fn app_with_license(license: LicenseState) -> Router {
+    app().route(
+        "/license/refresh",
+        post(license::refresh).with_state(license),
+    )
 }
 
 /// Liveness probe. Returns 200 with a small JSON body. No auth — this is the

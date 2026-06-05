@@ -23,7 +23,12 @@ axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
 http-body-util = { workspace = true }
+# Crypto primitive, used in tests to confirm issued tokens carry a valid
+# ed25519 signature. NOT `license-verify`: the backend must not depend on the
+# desktop verifier capability crate, even in tests (ADR-0002 edge check).
+ed25519-dalek = { workspace = true }

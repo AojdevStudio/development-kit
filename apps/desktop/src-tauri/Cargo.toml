@@ -25,3 +25,14 @@ license-verify = { workspace = true }
 tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Decodes the Base64 payload + signature from a /license/refresh response. Not
+# an authority dep — just wire encoding (ADR-0002 still holds: no signing key).
+base64 = { workspace = true }
+# Derive helper for the local license-store error taxonomy. Pure macro crate.
+thiserror = { workspace = true }
+
+# No dev-dependencies: the desktop tree holds NO signing capability, not even in
+# tests. License-store tests verify pre-signed fixtures (backend-issued, embedded
+# as constants) with `license-verify` only — the one license authority the
+# desktop has (ADR-0002). The live backend→desktop sign/verify round-trip is
+# covered in `crates/license-sign/tests/sign_verify_roundtrip.rs`.
