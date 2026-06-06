@@ -23,3 +23,7 @@ cargo_metadata = "0.18"
 # depends on the shared contract crate. shared is a pure, dependency-thin types
 # crate (ADR-0002), so this does not drag authority-bearing deps into xtask.
 shared = { workspace = true }
+# Parses the desktop `deny.toml` so the gate can prove the checked-in cargo-deny
+# config still bans every crate the canonical Rust ban list requires (issue #23).
+# Default features only need the parser; `parse` is in the default feature set.
+toml = { version = "0.8", default-features = false, features = ["parse"] }

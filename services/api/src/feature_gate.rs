@@ -61,7 +61,7 @@ async fn gated_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::FeatureValue;
+    use shared::{FeatureValue, PlanTier, SubscriptionStatus};
     use std::collections::BTreeMap;
 
     fn entitlements_with(feature: FeatureKey, value: FeatureValue) -> Entitlements {
@@ -69,10 +69,11 @@ mod tests {
         features.insert(feature, value);
         Entitlements {
             account_id: "acct_test".into(),
-            plan: "pro".into(),
-            status: "active".into(),
+            plan: PlanTier::Pro,
+            status: SubscriptionStatus::Active,
             trial: false,
             features,
+            license_expires_at: None,
         }
     }
 

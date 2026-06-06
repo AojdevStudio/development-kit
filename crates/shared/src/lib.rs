@@ -8,10 +8,19 @@
 
 #![forbid(unsafe_code)]
 
+mod dto;
 mod entitlements;
 mod feature_key;
 mod license;
+mod plan;
+mod sync_queue;
 
+pub use dto::{EntitlementsResponse, LicenseRefreshRequest, LicenseRefreshResponse};
 pub use entitlements::{Entitlements, FeatureValue};
 pub use feature_key::FeatureKey;
 pub use license::LicenseToken;
+pub use plan::{PlanTier, SubscriptionStatus};
+pub use sync_queue::{
+    ConflictPolicy, ConflictResolution, OpStatus, RetryDecision, RetryPolicy, SyncOperation,
+    SyncQueue, SyncQueueStore,
+};
