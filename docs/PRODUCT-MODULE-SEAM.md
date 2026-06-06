@@ -143,17 +143,23 @@ disjoint parallel key-space keeps the spine closed and the product space open,
 the open/closed principle applied to the feature vocabulary. (Recorded in
 `docs/adr/0002-capability-crates-and-product-seam.md`.)
 
-**What this seam proves vs. what it defers (be honest with the next author).**
+**What this seam proves, and what the sample product (#37) added.**
 The seam proves the *type and enforcement shape*: a product key validates,
 serializes, gates (`require_product_feature`), and is counted by the coverage
-gate. It does **not** yet wire live runtime population of `ProductEntitlements`
-from the backend's billing/license source into a request extractor. Today a
-product route receives the snapshot explicitly (the example reads it from the
-body for simplicity). Resolving product entitlements from the caller's token,
-the way the authenticated spine gate (`/gated-feature/{feature}`) resolves
-baseline entitlements, is wired by the sample product (#37). Until then, treat
-product gating as deny-by-default (an empty snapshot grants nothing), which is
-the safe direction.
+gate. The seam's in-repo test double (`vault`, in `tests/product_module.rs`)
+reads the snapshot from the request *body* for simplicity. That is a TEST
+SCAFFOLD, not the authority pattern.
+
+The **sample product (#37, `notes`) closed that loop**: its paid route
+`POST /notes/publish` resolves `ProductEntitlements` SERVER-SIDE from the caller's
+bearer token (auth, then account state, then the product's per-tier policy
+`resolve_product_entitlements`), exactly the way the authenticated spine gate
+(`/gated-feature/{feature}`) resolves baseline entitlements. The request body is
+never read for the authority decision, so a lying/forged body can never grant a
+paid product key (`services/api/tests/notes_product.rs` pins this). A new product
+copies the `notes` route shape, not the `vault` body-reading scaffold. Where a
+product has not yet wired server-side resolution, treat product gating as
+deny-by-default (an empty snapshot grants nothing), which is the safe direction.
 
 Also note: `ProductEntitlements` is a **parallel** path that *mirrors* the
 baseline enforcement question, not the literal same `BTreeMap<FeatureKey, …>`

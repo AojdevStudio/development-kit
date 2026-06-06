@@ -21,6 +21,11 @@ pub mod license_store;
 /// grant it. UX gating in React is presentation only; this is the local guard.
 pub mod feature_gate;
 
+/// Plugged-in product modules (issue #37). The Notes sample product contributes
+/// its local paid-action Tauri command here through the seam only — the desktop
+/// shell merely registers the command in `invoke_handler!` below.
+pub mod products;
+
 /// Minimal IPC round-trip used by the walking-skeleton UI to confirm the
 /// React <-> Tauri bridge works. Pure function so it is unit-testable without a
 /// running app.
@@ -44,7 +49,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             ping,
-            feature_gate::request_advanced_report
+            feature_gate::request_advanced_report,
+            // Issue #37 — the Notes sample product's paid local action. Registered
+            // additively here (one line), the only edit the product makes to the
+            // desktop shell. The command is the local authority gate (ADR-0001).
+            products::notes::request_publish_note
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

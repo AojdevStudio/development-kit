@@ -24,6 +24,7 @@ pub mod me;
 pub mod me_entitlements;
 pub mod principal;
 pub mod product_module;
+pub mod products;
 pub mod store;
 pub mod webhook;
 
@@ -88,7 +89,25 @@ pub fn app() -> Router {
         .merge(feature_gate::authenticated_router(dev_feature_gate_state(
             accounts.clone(),
         )))
+        .merge(products::notes::route::router(dev_notes_state(
+            accounts.clone(),
+        )))
         .merge(webhook::router(dev_webhook_state(accounts)))
+}
+
+/// The walking-skeleton state for the Notes sample product (issue #37): the dev
+/// principal store plus the *shared* dev account-state store, so the Notes paid
+/// gate (`POST /notes/publish`) resolves the dev token's real billing state
+/// end-to-end. Sharing the one account store means a webhook-reconciled billing
+/// change (issue #32) is reflected by the next Notes publish call — the same
+/// read-after-write contract `/me/entitlements` and the spine gate honor. This is
+/// the only `app()` wiring the Notes product adds; it is a single additive
+/// `.merge(...)`, touching no baseline route (the seam's one rule).
+fn dev_notes_state(accounts: InMemoryAccountStateStore) -> products::notes::route::NotesState {
+    products::notes::route::NotesState {
+        principals: Arc::new(store::InMemoryPrincipalStore::dev_seed()),
+        accounts: Arc::new(accounts),
+    }
 }
 
 /// The walking-skeleton state for `POST /webhooks/stripe`: a fresh processed-event

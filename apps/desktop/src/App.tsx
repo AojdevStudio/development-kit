@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { MePanel } from "./Me";
 import { BillingPanel } from "./BillingPanel";
 import { AdvancedReportPanel } from "./AdvancedReportPanel";
+import { NotesScreen } from "./products/notes/NotesScreen";
+import type { ProductEntitlements } from "./products/notes/notesEntitlements";
 
 /**
  * Walking-skeleton shell. Proves the window opens and the React <-> Tauri IPC
@@ -16,6 +18,19 @@ import { AdvancedReportPanel } from "./AdvancedReportPanel";
 
 /** Dev seed token recognised by the walking-skeleton backend store. */
 const DEV_TOKEN = "tok_alice";
+
+/**
+ * A deny-by-default Notes product snapshot. Until the desktop fetches the real
+ * `ProductEntitlements` from the backend (the snapshot is authored server-side,
+ * ADR-0001), the screen grants nothing — the safe direction the product-module
+ * seam endorses. The Tauri command and backend route remain the real authority
+ * regardless of what the screen shows.
+ */
+const EMPTY_NOTES_ENTITLEMENTS: ProductEntitlements = {
+  account_id: "",
+  namespace: "notes",
+  features: {},
+};
 
 export function App() {
   const [pong, setPong] = useState<string>("…");
@@ -36,6 +51,8 @@ export function App() {
       <MePanel token={DEV_TOKEN} />
       <BillingPanel token={DEV_TOKEN} />
       <AdvancedReportPanel token={DEV_TOKEN} />
+      {/* The Notes sample product (issue #37), contributed via the seam. */}
+      <NotesScreen entitlements={EMPTY_NOTES_ENTITLEMENTS} />
     </main>
   );
 }

@@ -190,11 +190,20 @@ pub fn uncovered_product_keys(
 /// The product-key registry: every product feature key a plugged-in module has
 /// declared. **This is where a product registers its gated keys** so the coverage
 /// gate counts them. The in-repo example module (`vault`) registers its key here;
-/// the #37 sample product appends its own.
+/// the #37 sample product (`notes`) appends its own.
 pub fn product_key_registry() -> Vec<ProductKeyEntry> {
-    vec![ProductKeyEntry {
-        key: ProductFeatureKey::new("vault", "share_record").expect("valid product key"),
-    }]
+    vec![
+        ProductKeyEntry {
+            key: ProductFeatureKey::new("vault", "share_record").expect("valid product key"),
+        },
+        // Issue #37 — the Notes sample product's one paid capability: publishing a
+        // note to the cloud. Registered here so the coverage gate holds it to the
+        // same non-React-gate standard as every other key; its gate test is
+        // recorded in `product_coverage_manifest` below.
+        ProductKeyEntry {
+            key: ProductFeatureKey::new("notes", "publish_note").expect("valid product key"),
+        },
+    ]
 }
 
 /// The product-key coverage manifest: every non-React gate test that proves a
@@ -205,12 +214,26 @@ pub fn product_key_registry() -> Vec<ProductKeyEntry> {
 /// `product_gate_denies_share_without_entitlement_and_allows_with_it` in
 /// `services/api/tests/product_module.rs`, run by `cargo test` in the same gate.
 pub fn product_coverage_manifest() -> Vec<ProductCoverageEntry> {
-    vec![ProductCoverageEntry {
-        key: ProductFeatureKey::new("vault", "share_record").expect("valid product key"),
-        layer: GateLayer::Backend,
-        test:
-            "api::product_module::product_gate_denies_share_without_entitlement_and_allows_with_it",
-    }]
+    vec![
+        ProductCoverageEntry {
+            key: ProductFeatureKey::new("vault", "share_record").expect("valid product key"),
+            layer: GateLayer::Backend,
+            test:
+                "api::product_module::product_gate_denies_share_without_entitlement_and_allows_with_it",
+        },
+        // Issue #37 — the Notes paid key `notes.publish_note` is covered by the
+        // backend gate test in `services/api/tests/notes_product.rs`, which proves
+        // a free account is denied (403) and an entitled account allowed (200)
+        // with the entitlement snapshot resolved SERVER-SIDE from the caller's
+        // token (ADR-0001), not from the request body. `cargo test` runs it in the
+        // same gate, so this coverage can never be claimed without the passing
+        // enforcement test.
+        ProductCoverageEntry {
+            key: ProductFeatureKey::new("notes", "publish_note").expect("valid product key"),
+            layer: GateLayer::Backend,
+            test: "api::notes_product::notes_publish_gate_denies_without_entitlement_and_allows_with_it",
+        },
+    ]
 }
 
 /// The gate check for product keys: every registered product key must be covered
@@ -520,6 +543,32 @@ mod tests {
         assert!(
             product_coverage_manifest().iter().any(|e| e.key == key),
             "example key has a recorded non-React gate test"
+        );
+    }
+
+    // --- #37: the Notes sample product's paid key is counted by the gate ---
+    #[test]
+    fn the_notes_paid_key_is_registered_and_covered() {
+        // The capstone: the sample product's one paid key `notes.publish_note` is
+        // declared in the registry AND covered by a non-React (backend) gate test
+        // in the manifest, so the live coverage run counts it for the right reason.
+        // If a future edit dropped the manifest entry, the live-coverage test below
+        // would go red — the structural guarantee a paid product key can't escape
+        // the gate.
+        let key = ProductFeatureKey::new("notes", "publish_note").expect("valid product key");
+        assert!(
+            product_key_registry().iter().any(|e| e.key == key),
+            "notes paid key is registered"
+        );
+        let manifest = product_coverage_manifest();
+        let covered = manifest
+            .iter()
+            .find(|e| e.key == key)
+            .expect("notes paid key has a recorded gate test");
+        assert_eq!(
+            covered.layer,
+            GateLayer::Backend,
+            "the notes key is gated at the backend (server-side authority), not React"
         );
     }
 }
