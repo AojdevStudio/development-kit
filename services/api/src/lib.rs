@@ -2,20 +2,24 @@
 //!
 //! Exposes the public health route and the first authenticated authority
 //! surface, `GET /me` (issue #27), which resolves who is calling and which
-//! account they belong to, plus `POST /license/refresh` (issue #28), which
-//! mints short-lived signed license tokens for offline paid access. The
-//! remaining surfaces declared in `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md`
-//! (`/me/entitlements`, `/billing/*`, `/stripe/webhook`) land in their own
-//! issues. The router is built as a pure value so it can be exercised in tests
-//! without binding a socket.
+//! account they belong to, `POST /license/refresh` (issue #28), which mints
+//! short-lived signed license tokens for offline paid access, and
+//! `GET /me/entitlements` (issue #29), which runs the entitlement engine over an
+//! account's billing state and returns the paid access the backend computed for
+//! it. The remaining surfaces declared in `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md`
+//! (`/billing/*`, `/stripe/webhook`) land in their own issues. The router is
+//! built as a pure value so it can be exercised in tests without binding a
+//! socket.
 
 #![forbid(unsafe_code)]
 
 pub mod audit;
 pub mod auth;
+pub mod entitlement;
 pub mod feature_gate;
 pub mod license;
 pub mod me;
+pub mod me_entitlements;
 pub mod principal;
 pub mod store;
 
@@ -25,8 +29,10 @@ use axum::{routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
 
 use crate::auth::PrincipalStore;
+use crate::entitlement::{AccountStateStore, InMemoryAccountStateStore};
 use crate::license::LicenseState;
 use crate::me::{get_me, AuthState};
+use crate::me_entitlements::EntitlementsState;
 
 /// Build the application router with a caller-supplied principal store. Kept
 /// separate from `serve` so tests can drive it via `tower::ServiceExt::oneshot`
@@ -51,6 +57,33 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 pub fn app() -> Router {
     app_with_store(Arc::new(store::InMemoryPrincipalStore::dev_seed()))
         .merge(feature_gate::router())
+        .merge(me_entitlements::router(dev_entitlements_state()))
+}
+
+/// The walking-skeleton state for `GET /me/entitlements`: the dev principal store
+/// (resolves [`store::DEV_TOKEN`]) plus the dev account-state store (seeds the dev
+/// account to an active Pro subscription), so the desktop dev build loads real
+/// paid entitlements end-to-end (issue #29). The durable Postgres-backed stores
+/// replace both behind the same traits.
+fn dev_entitlements_state() -> EntitlementsState {
+    EntitlementsState {
+        principals: Arc::new(store::InMemoryPrincipalStore::dev_seed()),
+        accounts: Arc::new(InMemoryAccountStateStore::dev_seed()),
+    }
+}
+
+/// Build the `GET /me/entitlements` router with caller-supplied stores. Kept
+/// separate so integration tests can drive the endpoint via
+/// `tower::ServiceExt::oneshot` with a known principal and account state, without
+/// binding a socket. The trait objects let a test inject any backing.
+pub fn entitlements_app(
+    principals: Arc<dyn PrincipalStore>,
+    accounts: Arc<dyn AccountStateStore>,
+) -> Router {
+    me_entitlements::router(EntitlementsState {
+        principals,
+        accounts,
+    })
 }
 
 /// Build the router including the authority routes that need backend state —
