@@ -36,23 +36,31 @@ export class BillingRequestError extends Error {
 export type UrlOpener = (url: string) => Promise<void>;
 
 /**
- * The default opener: hands the URL to the host to open in the system browser.
+ * The default opener: opens the URL in the OS default browser via the Tauri
+ * opener plugin (`@tauri-apps/plugin-opener`).
  *
- * Inside a Tauri v2 webview, an external `https://` URL opened with
- * `window.open(url, "_blank")` is routed to the OS default browser rather than a
- * new in-app window — which is exactly the billing requirement: checkout and the
- * customer portal must run in the real browser, never embedded (so the user sees
- * Stripe's real URL bar). This is the wired production default; tests inject a
- * fake opener instead. It pulls in no extra dependency and holds no Stripe secret.
+ * Checkout and the customer portal must run in the real system browser, never an
+ * embedded webview, so the user sees Stripe's real URL bar — `openUrl` is the
+ * Tauri-guaranteed way to reach the OS browser (the `opener:allow-open-url`
+ * capability scopes it to `https://*`). When running outside a Tauri host (e.g. a
+ * plain dev browser preview), it falls back to `window.open(url, "_blank")`. This
+ * is the wired production default; tests inject a fake opener instead. It holds no
+ * Stripe secret — it only opens a URL the backend produced (ADR-0001/0002).
  */
 export const systemBrowserOpener: UrlOpener = async (url: string): Promise<void> => {
-  if (typeof globalThis.window?.open === "function") {
-    globalThis.window.open(url, "_blank");
+  try {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
     return;
+  } catch {
+    // Not in a Tauri host (or the plugin is unavailable): fall back to the web
+    // standard, which a browser routes to a new tab / the OS handler.
+    if (typeof globalThis.window?.open === "function") {
+      globalThis.window.open(url, "_blank");
+      return;
+    }
+    throw new BillingRequestError("no system browser available to open billing URL");
   }
-  // No window host available (non-browser context): surface rather than silently
-  // drop, so a misconfigured caller is visible instead of a no-op "nothing opened".
-  throw new BillingRequestError("no system browser available to open billing URL");
 };
 
 /**
