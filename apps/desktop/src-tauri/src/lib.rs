@@ -32,6 +32,11 @@ fn pong() -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // The opener plugin lets the billing flow hand a backend-produced
+        // checkout/portal URL to the OS default browser (issue #31). It opens
+        // URLs only — it is not a billing authority and holds no Stripe secret
+        // (ADR-0001/0002).
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![ping])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

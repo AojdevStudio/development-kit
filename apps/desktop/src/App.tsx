@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MePanel } from "./Me";
+import { BillingPanel } from "./BillingPanel";
 
 /**
  * Walking-skeleton shell. Proves the window opens and the React <-> Tauri IPC
@@ -32,6 +33,7 @@ export function App() {
         Tauri command says: <strong>{pong}</strong>
       </p>
       <MePanel token={DEV_TOKEN} />
+      <BillingPanel token={DEV_TOKEN} />
     </main>
   );
 }

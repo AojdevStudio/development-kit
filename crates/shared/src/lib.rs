@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod audit;
+mod billing;
 mod dto;
 mod entitlements;
 mod feature_key;
@@ -17,6 +18,7 @@ mod plan;
 mod sync_queue;
 
 pub use audit::{ActorKind, AuditEvent, Sensitivity};
+pub use billing::{CheckoutSessionRequest, CheckoutSessionResponse, PortalSessionResponse};
 pub use dto::{EntitlementsResponse, LicenseRefreshRequest, LicenseRefreshResponse};
 pub use entitlements::{Entitlements, FeatureValue};
 pub use feature_key::FeatureKey;

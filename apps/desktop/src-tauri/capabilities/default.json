@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Baseline capability for the walking-skeleton window. Product capabilities are added per feature, never broadened wholesale.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    }
+  ]
 }

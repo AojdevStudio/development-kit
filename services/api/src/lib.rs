@@ -15,6 +15,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod billing;
 pub mod entitlement;
 pub mod feature_gate;
 pub mod license;
@@ -29,6 +30,7 @@ use axum::{routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
 
 use crate::auth::PrincipalStore;
+use crate::billing::{BillingProvider, BillingState, MockBillingProvider};
 use crate::entitlement::{AccountStateStore, InMemoryAccountStateStore};
 use crate::license::LicenseState;
 use crate::me::{get_me, AuthState};
@@ -54,10 +56,40 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// the platform spine ships a real, exercised authority boundary the feature-key
 /// coverage gate can count. It carries no backend state, so it merges after the
 /// auth state is applied, leaving both routers as `Router<()>`.
+///
+/// The billing routes (`/billing/checkout`, `/billing/portal`, issue #31) merge
+/// here too, wired to the [`MockBillingProvider`] so the dev server and tests
+/// exercise the full checkout/portal flow with NO Stripe key. The real provider
+/// drops in behind the same trait via [`billing_app`] for production.
 pub fn app() -> Router {
     app_with_store(Arc::new(store::InMemoryPrincipalStore::dev_seed()))
         .merge(feature_gate::router())
         .merge(me_entitlements::router(dev_entitlements_state()))
+        .merge(billing::router(dev_billing_state()))
+}
+
+/// The walking-skeleton billing state: the dev principal store plus the
+/// deterministic [`MockBillingProvider`], so the dev server serves real
+/// checkout/portal URLs for the dev token end-to-end without a Stripe key.
+fn dev_billing_state() -> BillingState {
+    BillingState {
+        principals: Arc::new(store::InMemoryPrincipalStore::dev_seed()),
+        provider: Arc::new(MockBillingProvider::new()),
+    }
+}
+
+/// Build the `/billing/*` router with caller-supplied stores and provider. Kept
+/// separate so integration tests drive the endpoints via
+/// `tower::ServiceExt::oneshot` with a known principal and a chosen provider
+/// (mock for tests, real Stripe in production), without binding a socket.
+pub fn billing_app(
+    principals: Arc<dyn PrincipalStore>,
+    provider: Arc<dyn BillingProvider>,
+) -> Router {
+    billing::router(BillingState {
+        principals,
+        provider,
+    })
 }
 
 /// The walking-skeleton state for `GET /me/entitlements`: the dev principal store
