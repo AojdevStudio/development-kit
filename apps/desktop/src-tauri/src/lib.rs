@@ -39,14 +39,43 @@ fn pong() -> String {
     "pong".to_string()
 }
 
+/// The product-entitlements source the Notes guard fetches from (issue #59).
+///
+/// The Notes command no longer accepts the entitlements snapshot from the
+/// frontend; it fetches it from this backend-authority source held in Tauri
+/// managed state. Until the live `GET /me/product-entitlements/notes` HTTP adapter
+/// lands (it needs no http-client dep in *this* module — the trait is the seam),
+/// the shell registers a fail-closed placeholder so the guard DENIES rather than
+/// granting on an unconfirmed entitlement. Swapping in the real adapter is a
+/// one-line `.manage(...)` change with no edit to the command.
+struct UnconfiguredEntitlementsSource;
+
+impl products::notes::ProductEntitlementsSource for UnconfiguredEntitlementsSource {
+    fn fetch(
+        &self,
+    ) -> Result<shared::ProductEntitlements, products::notes::ProductEntitlementsFetchError> {
+        // No backend adapter wired yet: fail closed. The guard maps this to a
+        // denial, so the local paid action is never granted without a real,
+        // backend-confirmed entitlement (ADR-0001).
+        Err(products::notes::ProductEntitlementsFetchError::Unreachable)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let notes_entitlements: std::sync::Arc<dyn products::notes::ProductEntitlementsSource> =
+        std::sync::Arc::new(UnconfiguredEntitlementsSource);
+
     tauri::Builder::default()
         // The opener plugin lets the billing flow hand a backend-produced
         // checkout/portal URL to the OS default browser (issue #31). It opens
         // URLs only — it is not a billing authority and holds no Stripe secret
         // (ADR-0001/0002).
         .plugin(tauri_plugin_opener::init())
+        // Issue #59: the Notes guard fetches its authoritative snapshot from this
+        // managed source, not from a frontend argument. Held as the trait object
+        // so the real backend adapter drops in without touching the command.
+        .manage(notes_entitlements)
         .invoke_handler(tauri::generate_handler![
             ping,
             feature_gate::request_advanced_report,

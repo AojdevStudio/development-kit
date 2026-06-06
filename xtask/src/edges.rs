@@ -93,6 +93,71 @@ const RULES: &[EdgeRule] = &[
     },
 ];
 
+/// The leaf util/types crates **explicitly exempted** from needing a crate-edge
+/// rule. These carry no authority edge to constrain: `shared` is types-only
+/// (ADR-0002), `xtask` is the gate runner, `local-store` is the desktop's local
+/// SQLite (allowed on the client), and the `license-*` crates ARE the capability
+/// crates the rules reference rather than constrain. Every OTHER workspace package
+/// must have a rule.
+///
+/// **Default-deny by design (issue #59).** The rule-coverage check enumerates the
+/// *actual* workspace packages (from `cargo metadata`) and requires a rule for
+/// every one not on this exemption list — so a NEW package (e.g. a future
+/// `mobile` client) is required to have a rule the moment it lands, rather than
+/// being silently unconstrained because a hardcoded inclusion list never names it.
+/// Exempting a new package is therefore a *conscious* edit to this list, reviewed
+/// like any other authority decision.
+///
+/// This is the **direct-edge rule-coverage** complement to the `deny.toml`
+/// transitive ban (`bans.rs`): edges proves each authority crate HAS a rule;
+/// deny.toml proves no banned crate reaches the desktop transitively.
+pub const RULE_EXEMPT_PACKAGES: &[&str] = &[
+    "shared",
+    "xtask",
+    "local-store",
+    "license-verify",
+    "license-sign",
+];
+
+/// The workspace packages in `workspace_packages` that need a rule but have none.
+///
+/// Default-deny: a package needs a rule unless it is on [`RULE_EXEMPT_PACKAGES`].
+/// A package "needs a rule and has none" is reported — that is exactly the
+/// silent-unconstrained gap issue #59 flags. Pure over the package names + the
+/// live `RULES`, so it is unit-testable; the caller supplies the real workspace
+/// package set from `cargo metadata`, so a NEW crate is seen the moment it exists.
+pub fn unconstrained_packages(workspace_packages: &[String]) -> Vec<String> {
+    let ruled: BTreeSet<&str> = RULES.iter().map(|r| r.package).collect();
+    let exempt: BTreeSet<&str> = RULE_EXEMPT_PACKAGES.iter().copied().collect();
+    workspace_packages
+        .iter()
+        .filter(|pkg| !exempt.contains(pkg.as_str()) && !ruled.contains(pkg.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// The rule-coverage assertion over the real workspace package set: every
+/// non-exempt package must have an explicit edge rule, or the gate fails naming
+/// the unconstrained package(s). `Ok(())` means no authority-bearing crate is
+/// silently unconstrained.
+///
+/// `workspace_packages` is the live set from `cargo metadata` (built in `lib.rs`),
+/// so this is default-deny against reality — a new client crate fails until it has
+/// a rule or a conscious exemption.
+pub fn evaluate_rule_coverage(workspace_packages: &[String]) -> Result<(), String> {
+    let missing = unconstrained_packages(workspace_packages);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} workspace package(s) have NO crate-edge rule and are not on the \
+         exemption list — they are silently unconstrained (issue #59); add an \
+         EdgeRule (or a conscious RULE_EXEMPT_PACKAGES entry) for each: {}",
+        missing.len(),
+        missing.join(", ")
+    ))
+}
+
 /// Evaluate the ADR-0002 edges against the given package graph. Returns every
 /// violation found; an empty vec means the crate graph honors the authority
 /// split.
@@ -180,5 +245,98 @@ mod tests {
     fn missing_package_is_not_a_violation() {
         // An empty graph should not panic or invent violations.
         assert_eq!(evaluate_edges(&[]), vec![]);
+    }
+
+    // ---- #59: rule-coverage assertion (default-deny: no package silently unconstrained) ----
+
+    /// The real workspace package set this repo has today, as `cargo metadata`
+    /// would report it. Used to exercise the default-deny check the way the live
+    /// gate runs it.
+    fn live_workspace_packages() -> Vec<String> {
+        [
+            "shared",
+            "license-verify",
+            "license-sign",
+            "local-store",
+            "api",
+            "desktop",
+            "xtask",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
+    // --- ISC-16 + ISC-19 (Anti): a NEW client crate in the workspace with no rule
+    // and no exemption FAILS — the exact hardcoded-package bug, killed. ---
+    #[test]
+    fn a_new_unruled_workspace_package_is_flagged_unconstrained() {
+        // Simulate a future `mobile` client crate landing with neither an EdgeRule
+        // nor a conscious exemption. Default-deny means it MUST be reported — it is
+        // not on a hardcoded inclusion list, it is simply "a package without a rule".
+        let mut pkgs = live_workspace_packages();
+        pkgs.push("mobile".to_string());
+        let missing = unconstrained_packages(&pkgs);
+        assert_eq!(
+            missing,
+            vec!["mobile".to_string()],
+            "a new client crate with no rule must be flagged, not silently allowed"
+        );
+    }
+
+    // --- ISC-13: the assertion fails (red) and names the unconstrained package ---
+    #[test]
+    fn evaluate_rule_coverage_fails_and_names_the_unconstrained_package() {
+        let mut pkgs = live_workspace_packages();
+        pkgs.push("mobile".to_string());
+        let err =
+            evaluate_rule_coverage(&pkgs).expect_err("an unconstrained package must fail the gate");
+        assert!(err.contains("mobile"), "names the offender: {err}");
+    }
+
+    // --- ISC-14 + ISC-18: the LIVE workspace passes (both authority crates ruled,
+    // every other crate consciously exempt) ---
+    #[test]
+    fn the_live_workspace_is_fully_rule_covered() {
+        assert_eq!(
+            unconstrained_packages(&live_workspace_packages()),
+            Vec::<String>::new(),
+            "every live non-exempt package must have an edge rule"
+        );
+        assert_eq!(evaluate_rule_coverage(&live_workspace_packages()), Ok(()));
+    }
+
+    // --- ISC-15: exempt leaf/util crates are NOT flagged (they carry no authority
+    // edge); only authority-bearing crates need rules ---
+    #[test]
+    fn exempt_util_crates_are_not_flagged() {
+        // A workspace of ONLY exempt crates yields no unconstrained packages.
+        let exempt_only: Vec<String> = RULE_EXEMPT_PACKAGES.iter().map(|s| s.to_string()).collect();
+        assert!(
+            unconstrained_packages(&exempt_only).is_empty(),
+            "exempt util/types crates must not be flagged"
+        );
+    }
+
+    // --- ISC-17: consistency — every ruled package is real, and the exempt list
+    // does not overlap the ruled list (a package is ruled XOR exempt, never both
+    // by accident), so the direct-edge coverage is unambiguous and complements
+    // deny.toml's transitive bans. ---
+    #[test]
+    fn ruled_and_exempt_sets_are_disjoint() {
+        let ruled: BTreeSet<&str> = RULES.iter().map(|r| r.package).collect();
+        let exempt: BTreeSet<&str> = RULE_EXEMPT_PACKAGES.iter().copied().collect();
+        assert!(
+            ruled.is_disjoint(&exempt),
+            "a package must be either ruled or exempt, never both: {:?}",
+            ruled.intersection(&exempt).collect::<Vec<_>>()
+        );
+    }
+
+    // --- belt-and-suspenders: a package that IS ruled is never reported, even if
+    // someone also listed it (defense against a future edit). ---
+    #[test]
+    fn a_ruled_package_is_never_reported_unconstrained() {
+        assert!(unconstrained_packages(&["desktop".into(), "api".into()]).is_empty());
     }
 }
