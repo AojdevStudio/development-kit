@@ -26,6 +26,22 @@ export type SubscriptionStatus =
 export type FeatureValue = boolean | number;
 
 /**
+ * A stable, explicit identifier for a gated capability — the baseline platform
+ * keys, mirroring the backend `FeatureKey` enum. Typing `allows` against this
+ * (rather than an arbitrary `string`) keeps the desktop's UX-gating callers from
+ * drifting to typo'd or invented keys, matching the typed-form discipline the
+ * Rust side enforces. Product modules extend the gated set via their own keys.
+ */
+export type FeatureKey =
+  | "export_pdf"
+  | "cloud_sync"
+  | "advanced_reports"
+  | "team_members"
+  | "max_projects"
+  | "priority_support"
+  | "api_access";
+
+/**
  * The account's computed paid access, mirroring the backend `Entitlements`. The
  * desktop reads `features` to drive UX-only gating; real enforcement is on the
  * server.
@@ -59,11 +75,22 @@ export class EntitlementsRequestError extends Error {
    * "no" about identity or access (401 unauthenticated, 403 forbidden, 404 no
    * account state). These are authority signals (ADR-0001), not transient
    * outages: the cache must NOT serve last-good entitlements over them, or a
-   * revoked/canceled account would keep cached premium access. Everything else
-   * (network failure, 5xx, timeout) is transient and may fall back to cache.
+   * revoked/canceled account would keep cached premium access.
    */
   get isAuthoritativeDenial(): boolean {
     return this.status === 401 || this.status === 403 || this.status === 404;
+  }
+
+  /**
+   * Whether the cache may serve last-good entitlements over this error. ONLY a
+   * genuinely transient failure qualifies: a thrown network error, or a 5xx /
+   * other server status. An authoritative denial (401/403/404) and a *malformed
+   * response* (a 2xx whose body failed validation — an `EntitlementsRequestError`
+   * with no `status`) both mean the value on hand is not a trustworthy
+   * authoritative answer, so neither may be papered over with stale access.
+   */
+  get isTransient(): boolean {
+    return typeof this.status === "number" && this.status >= 500;
   }
 }
 
@@ -140,7 +167,7 @@ function parseFeatures(value: unknown): Record<string, FeatureValue> {
  * mirrors the backend `Entitlements::allows`, but is UX-only — the server is the
  * real gate.
  */
-export function allows(entitlements: Entitlements, feature: string): boolean {
+export function allows(entitlements: Entitlements, feature: FeatureKey): boolean {
   const value = entitlements.features[feature];
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value > 0;
@@ -207,11 +234,6 @@ export class EntitlementsCache {
     return this.last;
   }
 
-  /** Store a known-good entitlements value as the fallback. */
-  store(entitlements: Entitlements): void {
-    this.last = entitlements;
-  }
-
   /** Drop any cached entitlements (e.g. on sign-out or an authoritative denial). */
   clear(): void {
     this.last = undefined;
@@ -223,8 +245,14 @@ export class EntitlementsCache {
    * - Success → cache and return the fresh value.
    * - Authoritative denial (401/403/404) → clear the cache and re-throw; never
    *   serve stale access over a backend "no".
-   * - Transient failure (network/5xx/timeout) → serve the last cached value if
-   *   one exists; otherwise re-throw so a cold-start failure is never swallowed.
+   * - Malformed response (a 2xx body that failed validation) → re-throw without
+   *   serving cache; the value is not a trustworthy authoritative answer.
+   * - Transient failure ONLY (network throw / 5xx) → serve the last cached value
+   *   if one exists; otherwise re-throw so a cold-start failure is never swallowed.
+   *
+   * The cache is populated *only* here, from a successful backend fetch — there is
+   * no public setter, so desktop code can never seed locally constructed
+   * entitlements into the gate (ADR-0001: the desktop reads, never decides).
    */
   async load(
     baseUrl: string,
@@ -237,10 +265,16 @@ export class EntitlementsCache {
       return fresh;
     } catch (err) {
       if (err instanceof EntitlementsRequestError && err.isAuthoritativeDenial) {
+        // The backend said "no": stale access must not survive a revocation.
         this.last = undefined;
         throw err;
       }
-      if (this.last !== undefined) return this.last;
+      // Only a genuinely transient failure may fall back to last-good. A network
+      // throw (not an EntitlementsRequestError) counts; a malformed 2xx body
+      // (EntitlementsRequestError with no status) does not.
+      const transient =
+        !(err instanceof EntitlementsRequestError) || err.isTransient;
+      if (transient && this.last !== undefined) return this.last;
       throw err;
     }
   }

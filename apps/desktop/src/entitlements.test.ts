@@ -180,4 +180,34 @@ describe("EntitlementsCache", () => {
     ).rejects.toMatchObject({ status: 404 });
     expect(cache.cached).toBeUndefined();
   });
+
+  it("does NOT serve cached entitlements over a malformed 200 response", async () => {
+    // A 2xx whose body fails validation is not a trustworthy authoritative
+    // answer — it must re-throw, not paper over with stale paid access.
+    const cache = new EntitlementsCache();
+    const okFetch = (async () =>
+      new Response(JSON.stringify(validResponse), { status: 200 })) as unknown as typeof fetch;
+    await cache.load("http://localhost:8787", "tok_alice", okFetch);
+
+    const malformedFetch = (async () =>
+      new Response(JSON.stringify({ entitlements: { plan: "platinum" } }), {
+        status: 200,
+      })) as unknown as typeof fetch;
+    await expect(
+      cache.load("http://localhost:8787", "tok_alice", malformedFetch),
+    ).rejects.toBeInstanceOf(EntitlementsRequestError);
+  });
+
+  it("DOES serve cached entitlements over a transient 5xx", async () => {
+    // A genuine transient outage is the one case the cache exists for.
+    const cache = new EntitlementsCache();
+    const okFetch = (async () =>
+      new Response(JSON.stringify(validResponse), { status: 200 })) as unknown as typeof fetch;
+    await cache.load("http://localhost:8787", "tok_alice", okFetch);
+
+    const downFetch = (async () =>
+      new Response("", { status: 503 })) as unknown as typeof fetch;
+    const served = await cache.load("http://localhost:8787", "tok_alice", downFetch);
+    expect(served).toEqual(proEntitlements);
+  });
 });

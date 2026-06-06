@@ -17,6 +17,13 @@ use std::collections::BTreeMap;
 
 use shared::{Entitlements, FeatureKey, FeatureValue, PlanTier, SubscriptionStatus};
 
+/// The "effectively unlimited" ceiling for tiers with no practical cap
+/// (Enterprise). Chosen to stay within JavaScript's safe-integer range
+/// (`Number.MAX_SAFE_INTEGER` = 2^53 − 1) so the desktop, which parses limits as
+/// JS numbers, can represent it without precision loss. A real cap no account
+/// will hit, not a magic `u64::MAX` that would overflow on the wire.
+pub const UNLIMITED: u64 = 9_007_199_254_740_991; // 2^53 - 1
+
 /// The account's current billing state — the typed input to the engine.
 ///
 /// Held as closed enums plus a period boundary so impossible states are
@@ -161,8 +168,8 @@ fn plan_features(plan: PlanTier) -> BTreeMap<FeatureKey, FeatureValue> {
             f.insert(AdvancedReports, Enabled(true));
             f.insert(PrioritySupport, Enabled(true));
             f.insert(ApiAccess, Enabled(true));
-            f.insert(MaxProjects, Limit(u64::MAX));
-            f.insert(TeamMembers, Limit(u64::MAX));
+            f.insert(MaxProjects, Limit(UNLIMITED));
+            f.insert(TeamMembers, Limit(UNLIMITED));
         }
     }
     f
