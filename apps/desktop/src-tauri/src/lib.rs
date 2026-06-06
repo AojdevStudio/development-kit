@@ -12,6 +12,10 @@
 pub use license_verify::{LicenseVerifier, VerifyError};
 pub use shared::{Entitlements, FeatureKey, LicenseToken};
 
+/// Local license token store: verifies and caches the short-lived token issued
+/// by the backend for bounded offline paid access (issue #28).
+pub mod license_store;
+
 /// Minimal IPC round-trip used by the walking-skeleton UI to confirm the
 /// React <-> Tauri bridge works. Pure function so it is unit-testable without a
 /// running app.

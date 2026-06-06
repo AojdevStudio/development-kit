@@ -4,6 +4,11 @@ name: gate
 # Branch protection on `main` should make the `gate` job a required status
 # check so a red gate physically blocks merge. The job name is fixed so a runner
 # swap (repo variable) never touches branch protection.
+#
+# Default runner is free GitHub-hosted (ubuntu-latest). To move the gate onto
+# your own hardware (opt-in only, if cloud minutes ever cost money), set the
+# GATE_RUNNER repo variable. See docs/ci-self-hosted-runner.md for the hardened
+# (ephemeral, isolated, secret-free, approval-gated) recipe required on a public repo.
 
 on:
   push:
@@ -47,6 +52,11 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
 
       - name: Run gate
         run: cargo xtask gate --scope all
