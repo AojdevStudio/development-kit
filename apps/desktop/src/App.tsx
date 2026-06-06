@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MePanel } from "./Me";
 import { BillingPanel } from "./BillingPanel";
+import { AdvancedReportPanel } from "./AdvancedReportPanel";
 
 /**
  * Walking-skeleton shell. Proves the window opens and the React <-> Tauri IPC
@@ -34,6 +35,7 @@ export function App() {
       </p>
       <MePanel token={DEV_TOKEN} />
       <BillingPanel token={DEV_TOKEN} />
+      <AdvancedReportPanel token={DEV_TOKEN} />
     </main>
   );
 }

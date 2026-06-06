@@ -10,13 +10,26 @@
 //! The `/gated/{feature}` route exists so the platform spine ships a real,
 //! exercised authority boundary the feature-key coverage gate (issue #25) can
 //! count. Product modules add their own gated routes the same way.
+//!
+//! The **authenticated** gate `/gated-feature/{feature}` (issue #30) closes the
+//! end-to-end loop: instead of trusting an entitlements body the caller supplies,
+//! it resolves the caller's entitlement snapshot from their bearer token — auth →
+//! account state → the entitlement engine — and gates against *that*. This is the
+//! route the desktop calls to enforce a paid action on the server (ADR-0001); a
+//! forged request body can never grant access because the body is never read.
 
-use axum::extract::Path;
-use axum::http::StatusCode;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::extract::{Path, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 
 use shared::{Entitlements, FeatureKey};
+
+use crate::auth::{resolve_principal, AuthError, PrincipalStore};
+use crate::entitlement::{resolve_entitlements, AccountStateStore};
 
 /// Parse a stable wire string back into a [`FeatureKey`], or `None` if it is not
 /// one of the known keys. The backend only gates the explicit vocabulary — an
@@ -56,6 +69,79 @@ async fn gated_action(
         Ok(()) => StatusCode::OK,
         Err(status) => status,
     }
+}
+
+/// Shared state for the authenticated feature gate: the principal store (who is
+/// calling) and the account-state store (what their account is entitled to). Both
+/// behind `Arc<dyn …>` so the durable Postgres-backed stores drop in without
+/// touching the handler — the same seam `me_entitlements` uses.
+#[derive(Clone)]
+pub struct FeatureGateState {
+    pub principals: Arc<dyn PrincipalStore>,
+    pub accounts: Arc<dyn AccountStateStore>,
+}
+
+/// Routes for the authenticated feature gate `POST /gated-feature/{feature}`,
+/// carrying their own [`FeatureGateState`].
+///
+/// Returned as a `Router<()>` (state already applied) so it merges cleanly into
+/// the app router alongside the other stateful routes, none of which it touches.
+pub fn authenticated_router(state: FeatureGateState) -> Router {
+    Router::new()
+        .route("/gated-feature/{feature}", post(authenticated_gate))
+        .with_state(state)
+}
+
+/// `POST /gated-feature/{feature}` — the authenticated server-side gate.
+///
+/// Resolves the caller's entitlement snapshot from their bearer token (auth →
+/// account state → the entitlement engine), then gates the requested feature.
+/// Returns 200 when the resolved snapshot allows it, 403 when it does not, 401 on
+/// any auth failure, 404 when the path segment is not a known feature key. The
+/// request body is intentionally NOT read: the verdict is the backend's, computed
+/// from the account's real billing state, so a forged body can never grant access
+/// (ADR-0001).
+async fn authenticated_gate(
+    State(state): State<FeatureGateState>,
+    Path(feature): Path<String>,
+    headers: HeaderMap,
+) -> StatusCode {
+    let Some(key) = parse_feature_key(&feature) else {
+        return StatusCode::NOT_FOUND;
+    };
+
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    let principal = match resolve_principal(state.principals.as_ref(), auth_header) {
+        Ok(p) => p,
+        Err(AuthError::MissingCredentials) | Err(AuthError::InvalidToken) => {
+            return StatusCode::UNAUTHORIZED
+        }
+    };
+
+    let Some(account_state) = state.accounts.account_state(&principal.account_id) else {
+        // Authenticated, but the account has no billing state on record: nothing
+        // grants the feature, so the paid action is forbidden.
+        return StatusCode::FORBIDDEN;
+    };
+
+    let entitlements = resolve_entitlements(principal.account_id, &account_state, now_unix());
+    match require_feature(&entitlements, key) {
+        Ok(()) => StatusCode::OK,
+        Err(status) => status,
+    }
+}
+
+/// The current wall-clock instant in unix epoch seconds, used as the engine's
+/// `now`. The engine takes `now` as a parameter (pure/testable); only this
+/// boundary reads the clock.
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

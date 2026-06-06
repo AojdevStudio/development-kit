@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use crate::auth::PrincipalStore;
 use crate::billing::{BillingProvider, BillingState, MockBillingProvider};
 use crate::entitlement::{AccountStateStore, InMemoryAccountStateStore};
+use crate::feature_gate::FeatureGateState;
 use crate::license::LicenseState;
 use crate::me::{get_me, AuthState};
 use crate::me_entitlements::EntitlementsState;
@@ -61,11 +62,16 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// here too, wired to the [`MockBillingProvider`] so the dev server and tests
 /// exercise the full checkout/portal flow with NO Stripe key. The real provider
 /// drops in behind the same trait via [`billing_app`] for production.
+///
+/// The authenticated feature gate (`/gated-feature/{feature}`, issue #30) merges
+/// here too, resolving the caller's entitlement snapshot from their token so the
+/// desktop can enforce a paid action on the server end-to-end (ADR-0001).
 pub fn app() -> Router {
     app_with_store(Arc::new(store::InMemoryPrincipalStore::dev_seed()))
         .merge(feature_gate::router())
         .merge(me_entitlements::router(dev_entitlements_state()))
         .merge(billing::router(dev_billing_state()))
+        .merge(feature_gate::authenticated_router(dev_feature_gate_state()))
 }
 
 /// The walking-skeleton billing state: the dev principal store plus the
@@ -113,6 +119,33 @@ pub fn entitlements_app(
     accounts: Arc<dyn AccountStateStore>,
 ) -> Router {
     me_entitlements::router(EntitlementsState {
+        principals,
+        accounts,
+    })
+}
+
+/// The walking-skeleton state for the authenticated feature gate
+/// (`POST /gated-feature/{feature}`): the dev principal store plus the dev
+/// account-state store, so the dev server enforces a paid action for the dev
+/// token end-to-end (issue #30). The durable Postgres-backed stores replace both
+/// behind the same traits.
+fn dev_feature_gate_state() -> FeatureGateState {
+    FeatureGateState {
+        principals: Arc::new(store::InMemoryPrincipalStore::dev_seed()),
+        accounts: Arc::new(InMemoryAccountStateStore::dev_seed()),
+    }
+}
+
+/// Build the authenticated feature-gate router with caller-supplied stores. Kept
+/// separate so integration tests drive `POST /gated-feature/{feature}` via
+/// `tower::ServiceExt::oneshot` with a known principal and account state, without
+/// binding a socket. The trait objects let a test inject any backing — an
+/// entitled Pro account and an unentitled free one through the same router.
+pub fn feature_gate_app(
+    principals: Arc<dyn PrincipalStore>,
+    accounts: Arc<dyn AccountStateStore>,
+) -> Router {
+    feature_gate::authenticated_router(FeatureGateState {
         principals,
         accounts,
     })

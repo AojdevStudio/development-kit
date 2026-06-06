@@ -174,6 +174,28 @@ export function allows(entitlements: Entitlements, feature: FeatureKey): boolean
   return false;
 }
 
+/**
+ * The visibility a paid feature's UI should have for these entitlements (issue
+ * #30). `"visible"` when the server-resolved snapshot grants the feature,
+ * `"hidden"` when it does not — the same feature key the Tauri command and the
+ * backend gate use.
+ *
+ * Authority boundary (ADR-0001): this is UX gating ONLY. Hiding the control is a
+ * convenience that keeps the screen honest; it is never the protection. A user
+ * who reaches the action anyway is still refused by the Tauri command and the
+ * backend, both of which decide from the same snapshot the backend computed. The
+ * `entitlements` passed here must be a backend-fetched snapshot, never one the
+ * desktop authored.
+ */
+export type GateVisibility = "visible" | "hidden";
+
+export function featureGateState(
+  entitlements: Entitlements,
+  feature: FeatureKey,
+): GateVisibility {
+  return allows(entitlements, feature) ? "visible" : "hidden";
+}
+
 function asObject(value: unknown, field: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null) {
     throw new EntitlementsRequestError(`malformed entitlements: missing ${field}`);

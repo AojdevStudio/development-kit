@@ -16,6 +16,11 @@ pub use shared::{Entitlements, FeatureKey, LicenseToken};
 /// by the backend for bounded offline paid access (issue #28).
 pub mod license_store;
 
+/// Local (Tauri-command) feature gate for one concrete paid feature (issue #30):
+/// refuses a paid action when the server-resolved entitlement snapshot does not
+/// grant it. UX gating in React is presentation only; this is the local guard.
+pub mod feature_gate;
+
 /// Minimal IPC round-trip used by the walking-skeleton UI to confirm the
 /// React <-> Tauri bridge works. Pure function so it is unit-testable without a
 /// running app.
@@ -37,7 +42,10 @@ pub fn run() {
         // URLs only — it is not a billing authority and holds no Stripe secret
         // (ADR-0001/0002).
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![ping])
+        .invoke_handler(tauri::generate_handler![
+            ping,
+            feature_gate::request_advanced_report
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
