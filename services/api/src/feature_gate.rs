@@ -7,9 +7,11 @@
 //! [`require_feature`] rather than re-deriving access from plan names, so every
 //! gated action asks the same question: "does this account have this feature?"
 //!
-//! The `/gated/{feature}` route exists so the platform spine ships a real,
-//! exercised authority boundary the feature-key coverage gate (issue #25) can
-//! count. Product modules add their own gated routes the same way.
+//! There is deliberately NO body-trusting `/gated/{feature}` route (removed in
+//! issue #57): it deserialized an `Entitlements` DTO from the request body and
+//! gated on it — a pure function over HTTP, not an authority boundary, since the
+//! caller picks the body. Crediting it as backend coverage reported a false
+//! invariant. The authenticated gate below is the only backend coverage counted.
 //!
 //! The **authenticated** gate `/gated-feature/{feature}` (issue #30) closes the
 //! end-to-end loop: instead of trusting an entitlements body the caller supplies,
@@ -24,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::Router;
 
 use shared::{Entitlements, FeatureKey, ProductEntitlements, ProductFeatureKey};
 
@@ -65,27 +67,6 @@ pub fn require_product_feature(
         Ok(())
     } else {
         Err(StatusCode::FORBIDDEN)
-    }
-}
-
-/// Routes for the backend feature gate. Merged into the app router by `app()`.
-pub fn router() -> Router {
-    Router::new().route("/gated/{feature}", post(gated_action))
-}
-
-/// A server-backed paid action guarded by a feature key. Returns 200 when the
-/// caller's entitlements allow the feature, 403 when they do not, and 404 when
-/// the path segment is not a known feature key.
-async fn gated_action(
-    Path(feature): Path<String>,
-    Json(entitlements): Json<Entitlements>,
-) -> StatusCode {
-    let Some(key) = parse_feature_key(&feature) else {
-        return StatusCode::NOT_FOUND;
-    };
-    match require_feature(&entitlements, key) {
-        Ok(()) => StatusCode::OK,
-        Err(status) => status,
     }
 }
 

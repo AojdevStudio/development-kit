@@ -5,15 +5,19 @@
 //! seed). Absent that key, the binary serves only the health route — so an
 //! unconfigured deploy never exposes a token-minting endpoint.
 //!
-//! SECURITY — AUTH GAP (issue #28 scope): `/license/refresh` currently mints a
-//! token for any caller-supplied `account_id`. Authentication and account/
-//! entitlement validation are a separate issue (auth `/me`, #20). This route
-//! MUST be placed behind that auth middleware before any production deploy;
-//! until then, configure the signing key only in trusted/dev environments.
+//! SECURITY (issue #56, hardened): `/license/refresh` is mounted behind auth —
+//! the caller is resolved from their bearer token, the `account_id` comes from
+//! the authenticated principal (never the body), and the token's plan/features
+//! come from the entitlement engine over the account's real billing state. A free
+//! account therefore receives a free token; no caller can mint a token for an
+//! account it does not own.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
+use api::entitlement::InMemoryAccountStateStore;
 use api::license::LicenseState;
+use api::store::InMemoryPrincipalStore;
 use axum::Router;
 use license_sign::LicenseSigner;
 
@@ -33,25 +37,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Assemble the router, mounting the license route iff a signing key is present.
+/// Assemble the router. Two independent env-gated authority decisions, each
+/// mirroring the other so a configured deploy can never fall back to a dev/mock
+/// authority path:
+///
+/// 1. **Webhook verifier (issue #58):** when `STRIPE_WEBHOOK_SECRET` is present
+///    the binary mounts the REAL [`StripeWebhookVerifier`] (HMAC-SHA256); absent
+///    it, the deterministic mock (dev/CI only). The real verifier is selected
+///    whenever the secret is set — there is no path that keeps the mock once a
+///    secret is configured.
+/// 2. **License route (issue #28/#56):** mounted only when `LICENSE_SIGNING_KEY`
+///    is present, and always auth-gated with account/plan resolved server-side.
 fn build_router() -> Router {
-    match load_signer() {
-        Some(signer) => {
-            println!("license signing key loaded; mounting POST /license/refresh");
+    // 1) Base app: real webhook verifier iff the secret is set, else the mock.
+    let base = match webhook_secret() {
+        Some(secret) => {
             println!(
-                "WARNING: /license/refresh is NOT yet behind auth (issue #28); \
-                 do not expose this binary publicly until auth lands (#20)"
+                "STRIPE_WEBHOOK_SECRET set; mounting POST /webhooks/stripe with the \
+                 REAL Stripe HMAC verifier (mock disabled)"
             );
-            api::app_with_license(LicenseState::new(signer))
+            api::app_with_stripe_secret(secret)
         }
         None => {
             println!(
-                "LICENSE_SIGNING_KEY not set; serving health only \
-                 (POST /license/refresh disabled)"
+                "STRIPE_WEBHOOK_SECRET not set; POST /webhooks/stripe uses the dev \
+                 mock verifier (no live secret)"
             );
             api::app()
         }
+    };
+
+    // 2) License route on top, iff a signing key is present.
+    match load_signer() {
+        Some(signer) => {
+            println!(
+                "license signing key loaded; mounting POST /license/refresh \
+                 (auth-gated; account + plan resolved server-side)"
+            );
+            // The license route shares the same dev principal/account stores the
+            // rest of the authority surface uses, so the caller is authenticated
+            // and their plan resolved from real billing state (issue #56). The
+            // durable Postgres-backed stores drop in behind the same traits.
+            let license = LicenseState::new(
+                signer,
+                Arc::new(InMemoryPrincipalStore::dev_seed()),
+                Arc::new(InMemoryAccountStateStore::dev_seed()),
+            );
+            base.route(
+                "/license/refresh",
+                axum::routing::post(api::license::refresh).with_state(license),
+            )
+        }
+        None => {
+            println!("LICENSE_SIGNING_KEY not set; POST /license/refresh disabled");
+            base
+        }
     }
+}
+
+/// Normalize a raw `STRIPE_WEBHOOK_SECRET` value into the configured secret, if
+/// any. A missing or blank value is `None` (mock verifier); a non-blank value is
+/// `Some` (real verifier). Pure over its input so the selection rule is unit-
+/// testable without mutating process env.
+fn normalize_webhook_secret(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// The Stripe webhook signing secret from the environment, if configured. The
+/// selection input the binary mirrors the license env-gating on (issue #58): when
+/// it is `Some`, the REAL verifier is mounted and there is no fallback to the mock.
+fn webhook_secret() -> Option<String> {
+    normalize_webhook_secret(std::env::var("STRIPE_WEBHOOK_SECRET").ok().as_deref())
 }
 
 /// Build the backend signer from `LICENSE_SIGNING_KEY` (64 hex chars = 32-byte
@@ -104,5 +162,27 @@ mod tests {
     fn decode_hex_32_rejects_non_hex_digits() {
         let bad = "zz07070707070707070707070707070707070707070707070707070707070707";
         assert_eq!(decode_hex_32(bad), None);
+    }
+
+    // --- #58: webhook verifier selection mirrors the license env-gating ---
+
+    #[test]
+    fn a_present_webhook_secret_selects_the_real_verifier() {
+        // A configured secret is `Some`, which is what drives `build_router` to
+        // mount the REAL verifier — there is no branch that keeps the mock once a
+        // secret is set.
+        assert_eq!(
+            normalize_webhook_secret(Some("whsec_live_value")),
+            Some("whsec_live_value".to_string())
+        );
+    }
+
+    #[test]
+    fn an_absent_or_blank_webhook_secret_keeps_the_mock() {
+        // Absent → mock. Blank/whitespace → mock (never the real verifier with an
+        // unusable empty key).
+        assert_eq!(normalize_webhook_secret(None), None);
+        assert_eq!(normalize_webhook_secret(Some("")), None);
+        assert_eq!(normalize_webhook_secret(Some("   ")), None);
     }
 }

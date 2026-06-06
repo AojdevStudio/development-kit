@@ -81,9 +81,18 @@ pub fn uncovered_keys(all_keys: &[FeatureKey], entries: &[CoverageEntry]) -> Vec
 /// gate for any [`FeatureKey`] missing from this list (see
 /// [`run_feature_key_coverage`]).
 ///
-/// Baseline coverage today is the backend authorization gate
-/// (`services/api/tests/feature_gate.rs`): each key has a test asserting the
-/// server denies the gated action without the entitlement and allows it with it.
+/// Baseline coverage is the AUTHENTICATED backend authorization gate
+/// (`services/api/tests/feature_gate_authenticated.rs`): each key has a test
+/// asserting the server denies the gated action without the entitlement and
+/// allows it with it, with the entitlement snapshot resolved SERVER-SIDE from the
+/// caller's bearer token (ADR-0001) — never from a request body.
+///
+/// Issue #57 hardening: the earlier body-trusting `/gated/{feature}` tests are
+/// gone from this manifest. That route let the test author (and, in production,
+/// the caller) pick the entitlements body, so it was a pure function over HTTP,
+/// not an authority boundary — crediting it reported a false invariant. Every
+/// baseline key now points at an authenticated, token-resolving gate test, so a
+/// paid baseline feature can no longer be "covered" by a body-posting test.
 pub fn coverage_manifest() -> Vec<CoverageEntry> {
     fn backend(key: FeatureKey, test: &'static str) -> CoverageEntry {
         CoverageEntry {
@@ -103,41 +112,35 @@ pub fn coverage_manifest() -> Vec<CoverageEntry> {
     vec![
         backend(
             FeatureKey::ExportPdf,
-            "api::feature_gate::gate_denies_export_pdf_without_entitlement_and_allows_with_it",
+            "api::feature_gate_authenticated::gate_denies_export_pdf_authenticated_without_entitlement_and_allows_with_it",
         ),
         backend(
             FeatureKey::CloudSync,
-            "api::feature_gate::gate_denies_cloud_sync_without_entitlement_and_allows_with_it",
+            "api::feature_gate_authenticated::gate_denies_cloud_sync_authenticated_without_entitlement_and_allows_with_it",
         ),
         backend(
             FeatureKey::AdvancedReports,
-            "api::feature_gate::gate_denies_advanced_reports_without_entitlement_and_allows_with_it",
+            "api::feature_gate_authenticated::gate_denies_advanced_reports_authenticated_without_entitlement_and_allows_with_it",
         ),
         backend(
             FeatureKey::TeamMembers,
-            "api::feature_gate::gate_denies_team_members_without_entitlement_and_allows_with_it",
+            "api::feature_gate_authenticated::gate_denies_team_members_authenticated_without_entitlement_and_allows_with_it",
         ),
         backend(
             FeatureKey::MaxProjects,
-            "api::feature_gate::gate_denies_max_projects_without_entitlement_and_allows_with_it",
+            "api::feature_gate_authenticated::gate_denies_max_projects_authenticated_without_entitlement_and_allows_with_it",
         ),
         backend(
             FeatureKey::PrioritySupport,
-            "api::feature_gate::gate_denies_priority_support_without_entitlement_and_allows_with_it",
+            "api::feature_gate_authenticated::gate_denies_priority_support_authenticated_without_entitlement_and_allows_with_it",
         ),
         backend(
             FeatureKey::ApiAccess,
-            "api::feature_gate::gate_denies_api_access_without_entitlement_and_allows_with_it",
+            "api::feature_gate_authenticated::gate_denies_api_access_authenticated_without_entitlement_and_allows_with_it",
         ),
-        // Issue #30 proves ONE concrete paid feature (`AdvancedReports`) end-to-end:
-        // beyond the body-driven backend test above, it is gated by the AUTHENTICATED
-        // backend route (entitlements resolved from the caller's token) and by the
-        // Tauri command. Both non-React layers are recorded so the gate counts the
-        // full end-to-end proof, not just the baseline body-driven backend test.
-        backend(
-            FeatureKey::AdvancedReports,
-            "api::feature_gate_authenticated::gate_denies_advanced_reports_without_entitlement_and_allows_with_it",
-        ),
+        // Issue #30 proves `AdvancedReports` end-to-end across BOTH non-React
+        // layers: the authenticated backend gate above plus the Tauri command, so
+        // the manifest records the full proof, not the backend alone.
         tauri(
             FeatureKey::AdvancedReports,
             "desktop_lib::feature_gate::tests::command_denies_advanced_report_without_entitlement",
@@ -413,6 +416,45 @@ mod tests {
             layers.contains(&GateLayer::Backend),
             "advanced_reports must have a backend gate test"
         );
+    }
+
+    #[test]
+    fn no_baseline_backend_entry_points_at_a_body_trusting_gated_route() {
+        // Issue #57: a body-posting `/gated/{feature}` test can never earn backend
+        // coverage again. Every backend entry must name the AUTHENTICATED gate
+        // (`feature_gate_authenticated::*`), which resolves entitlements server-side
+        // from the token — not the removed body-trusting `feature_gate::gate_*`
+        // tests. This guards against a regression that would re-credit a body route.
+        for entry in coverage_manifest() {
+            if entry.layer == GateLayer::Backend {
+                assert!(
+                    entry.test.contains("feature_gate_authenticated::"),
+                    "backend coverage for {} must be an authenticated, token-resolving gate test, \
+                     got `{}`",
+                    entry.key.as_str(),
+                    entry.test
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_baseline_key_has_an_authenticated_backend_gate_test() {
+        // The #57 invariant stated positively: each of the seven baseline keys is
+        // covered by an authenticated backend gate test (not just "some" backend
+        // test). This is what makes the gate's green TRUE.
+        for key in FeatureKey::ALL {
+            let has_authenticated_backend = coverage_manifest().iter().any(|e| {
+                e.key == key
+                    && e.layer == GateLayer::Backend
+                    && e.test.contains("feature_gate_authenticated::")
+            });
+            assert!(
+                has_authenticated_backend,
+                "{} must have an authenticated backend gate test in the manifest",
+                key.as_str()
+            );
+        }
     }
 
     #[test]
