@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod feature_gate;
 pub mod license;
 pub mod me;
 pub mod principal;
@@ -41,8 +42,14 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// Build the application router with the walking-skeleton dev store. This is the
 /// entrypoint the binary uses; its store resolves [`store::DEV_TOKEN`] so the
 /// desktop dev build can load the current account end-to-end (issue #27).
+///
+/// The backend feature gate (`/gated/{feature}`, issue #25) is merged here so
+/// the platform spine ships a real, exercised authority boundary the feature-key
+/// coverage gate can count. It carries no backend state, so it merges after the
+/// auth state is applied, leaving both routers as `Router<()>`.
 pub fn app() -> Router {
     app_with_store(Arc::new(store::InMemoryPrincipalStore::dev_seed()))
+        .merge(feature_gate::router())
 }
 
 /// Build the router including the authority routes that need backend state —

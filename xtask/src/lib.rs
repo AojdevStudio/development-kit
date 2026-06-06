@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bans;
+pub mod coverage;
 pub mod edges;
 pub mod leakscan;
 pub mod registry;
