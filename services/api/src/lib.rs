@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 use crate::auth::PrincipalStore;
 use crate::billing::{BillingProvider, BillingState, MockBillingProvider};
 use crate::entitlement::{AccountStateStore, InMemoryAccountStateStore};
+use crate::feature_gate::FeatureGateState;
 use crate::license::LicenseState;
 use crate::me::{get_me, AuthState};
 use crate::me_entitlements::EntitlementsState;
@@ -65,6 +66,10 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// exercise the full checkout/portal flow with NO Stripe key. The real provider
 /// drops in behind the same trait via [`billing_app`] for production.
 ///
+/// The authenticated feature gate (`/gated-feature/{feature}`, issue #30) merges
+/// here too, resolving the caller's entitlement snapshot from their token so the
+/// desktop can enforce a paid action on the server end-to-end (ADR-0001).
+///
 /// The Stripe webhook route (`/webhooks/stripe`, issue #32) merges here too,
 /// wired to the [`MockWebhookVerifier`] so the dev server and tests exercise the
 /// full ingest+reconcile path with NO Stripe webhook secret. It shares the *same*
@@ -79,6 +84,9 @@ pub fn app() -> Router {
             accounts.clone(),
         )))
         .merge(billing::router(dev_billing_state()))
+        .merge(feature_gate::authenticated_router(dev_feature_gate_state(
+            accounts.clone(),
+        )))
         .merge(webhook::router(dev_webhook_state(accounts)))
 }
 
@@ -150,6 +158,37 @@ pub fn entitlements_app(
     accounts: Arc<dyn AccountStateStore>,
 ) -> Router {
     me_entitlements::router(EntitlementsState {
+        principals,
+        accounts,
+    })
+}
+
+/// The walking-skeleton state for the authenticated feature gate
+/// (`POST /gated-feature/{feature}`): the dev principal store plus a
+/// caller-supplied account-state store, so the dev server enforces a paid action
+/// for the dev token end-to-end (issue #30). The store is supplied (not
+/// constructed here) so the runnable app shares *one* account store across
+/// `/me/entitlements`, the webhook reconciler (issue #32), and this gate rather
+/// than each holding an isolated copy — a webhook-reconciled billing change is
+/// then reflected by the next gated-feature call. The durable Postgres-backed
+/// stores replace both behind the same traits.
+fn dev_feature_gate_state(accounts: InMemoryAccountStateStore) -> FeatureGateState {
+    FeatureGateState {
+        principals: Arc::new(store::InMemoryPrincipalStore::dev_seed()),
+        accounts: Arc::new(accounts),
+    }
+}
+
+/// Build the authenticated feature-gate router with caller-supplied stores. Kept
+/// separate so integration tests drive `POST /gated-feature/{feature}` via
+/// `tower::ServiceExt::oneshot` with a known principal and account state, without
+/// binding a socket. The trait objects let a test inject any backing — an
+/// entitled Pro account and an unentitled free one through the same router.
+pub fn feature_gate_app(
+    principals: Arc<dyn PrincipalStore>,
+    accounts: Arc<dyn AccountStateStore>,
+) -> Router {
+    feature_gate::authenticated_router(FeatureGateState {
         principals,
         accounts,
     })

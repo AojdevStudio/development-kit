@@ -92,6 +92,13 @@ pub fn coverage_manifest() -> Vec<CoverageEntry> {
             test,
         }
     }
+    fn tauri(key: FeatureKey, test: &'static str) -> CoverageEntry {
+        CoverageEntry {
+            key,
+            layer: GateLayer::TauriCommand,
+            test,
+        }
+    }
 
     vec![
         backend(
@@ -121,6 +128,19 @@ pub fn coverage_manifest() -> Vec<CoverageEntry> {
         backend(
             FeatureKey::ApiAccess,
             "api::feature_gate::gate_denies_api_access_without_entitlement_and_allows_with_it",
+        ),
+        // Issue #30 proves ONE concrete paid feature (`AdvancedReports`) end-to-end:
+        // beyond the body-driven backend test above, it is gated by the AUTHENTICATED
+        // backend route (entitlements resolved from the caller's token) and by the
+        // Tauri command. Both non-React layers are recorded so the gate counts the
+        // full end-to-end proof, not just the baseline body-driven backend test.
+        backend(
+            FeatureKey::AdvancedReports,
+            "api::feature_gate_authenticated::gate_denies_advanced_reports_without_entitlement_and_allows_with_it",
+        ),
+        tauri(
+            FeatureKey::AdvancedReports,
+            "desktop_lib::feature_gate::tests::command_denies_advanced_report_without_entitlement",
         ),
     ]
 }
@@ -253,6 +273,28 @@ mod tests {
             run_feature_key_coverage(),
             Ok(()),
             "every baseline feature key must have a non-React gate test in the manifest"
+        );
+    }
+
+    #[test]
+    fn advanced_reports_is_proven_end_to_end_across_command_and_backend() {
+        // Issue #30: the one concrete paid feature must be gated at BOTH non-React
+        // layers — the Tauri command and the (authenticated) backend — so the
+        // coverage manifest records the full end-to-end proof, not the screen alone.
+        use std::collections::BTreeSet;
+        let entries = coverage_manifest();
+        let layers: BTreeSet<GateLayer> = entries
+            .iter()
+            .filter(|e| e.key == FeatureKey::AdvancedReports)
+            .map(|e| e.layer)
+            .collect();
+        assert!(
+            layers.contains(&GateLayer::TauriCommand),
+            "advanced_reports must have a Tauri-command gate test"
+        );
+        assert!(
+            layers.contains(&GateLayer::Backend),
+            "advanced_reports must have a backend gate test"
         );
     }
 
