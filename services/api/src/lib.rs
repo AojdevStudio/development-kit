@@ -40,7 +40,9 @@ use crate::feature_gate::FeatureGateState;
 use crate::license::LicenseState;
 use crate::me::{get_me, AuthState};
 use crate::me_entitlements::EntitlementsState;
-use crate::webhook::{MockWebhookVerifier, ProcessedEventStore, WebhookState};
+use crate::webhook::{
+    MockWebhookVerifier, ProcessedEventStore, StripeWebhookVerifier, WebhookState, WebhookVerifier,
+};
 
 /// Build the application router with a caller-supplied principal store. Kept
 /// separate from `serve` so tests can drive it via `tower::ServiceExt::oneshot`
@@ -58,10 +60,11 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// entrypoint the binary uses; its store resolves [`store::DEV_TOKEN`] so the
 /// desktop dev build can load the current account end-to-end (issue #27).
 ///
-/// The backend feature gate (`/gated/{feature}`, issue #25) is merged here so
-/// the platform spine ships a real, exercised authority boundary the feature-key
-/// coverage gate can count. It carries no backend state, so it merges after the
-/// auth state is applied, leaving both routers as `Router<()>`.
+/// The backend authority boundary for paid actions is the AUTHENTICATED feature
+/// gate (`/gated-feature/{feature}`, issue #30), merged below. The earlier
+/// body-trusting `/gated/{feature}` route was removed (issue #57): it gated on an
+/// `Entitlements` body the caller supplied, so it was a pure function over HTTP,
+/// not an authority boundary, and must never earn backend coverage credit.
 ///
 /// The billing routes (`/billing/checkout`, `/billing/portal`, issue #31) merge
 /// here too, wired to the [`MockBillingProvider`] so the dev server and tests
@@ -79,9 +82,26 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// cloned), so an event the webhook reconciles is visible to the next
 /// entitlements read — the read-after-write reconcile contract.
 pub fn app() -> Router {
+    // No live Stripe secret in the default/dev app: the deterministic mock
+    // verifier exercises the full ingest path without one.
+    app_with_webhook_verifier(Arc::new(MockWebhookVerifier::new()))
+}
+
+/// Build the application router with the REAL Stripe webhook verifier, keyed by
+/// the live `whsec_…` signing secret (issue #58). This is what the binary mounts
+/// whenever `STRIPE_WEBHOOK_SECRET` is set, so a configured production deploy
+/// verifies real HMAC signatures and never trusts the mock's constant. Identical
+/// to [`app`] in every other respect.
+pub fn app_with_stripe_secret(secret: impl Into<String>) -> Router {
+    app_with_webhook_verifier(Arc::new(StripeWebhookVerifier::new(secret)))
+}
+
+/// The shared app builder: every route except the webhook verifier is fixed; the
+/// verifier is injected so [`app`] (mock, dev) and [`app_with_stripe_secret`]
+/// (real, production) share one wiring and can never drift apart.
+fn app_with_webhook_verifier(verifier: Arc<dyn WebhookVerifier>) -> Router {
     let accounts = InMemoryAccountStateStore::dev_seed();
     app_with_store(Arc::new(store::InMemoryPrincipalStore::dev_seed()))
-        .merge(feature_gate::router())
         .merge(me_entitlements::router(dev_entitlements_state_with(
             accounts.clone(),
         )))
@@ -92,7 +112,11 @@ pub fn app() -> Router {
         .merge(products::notes::route::router(dev_notes_state(
             accounts.clone(),
         )))
-        .merge(webhook::router(dev_webhook_state(accounts)))
+        .merge(webhook::router(WebhookState {
+            accounts: Arc::new(accounts),
+            processed: Arc::new(ProcessedEventStore::new()),
+            verifier,
+        }))
 }
 
 /// The walking-skeleton state for the Notes sample product (issue #37): the dev
@@ -107,18 +131,6 @@ fn dev_notes_state(accounts: InMemoryAccountStateStore) -> products::notes::rout
     products::notes::route::NotesState {
         principals: Arc::new(store::InMemoryPrincipalStore::dev_seed()),
         accounts: Arc::new(accounts),
-    }
-}
-
-/// The walking-skeleton state for `POST /webhooks/stripe`: a fresh processed-event
-/// store, the deterministic [`MockWebhookVerifier`] (no live secret), and the
-/// *shared* dev account-state store, so a reconciled event is reflected by the
-/// next `GET /me/entitlements` against the same `api::app()`.
-fn dev_webhook_state(accounts: InMemoryAccountStateStore) -> WebhookState {
-    WebhookState {
-        accounts: Arc::new(accounts),
-        processed: Arc::new(ProcessedEventStore::new()),
-        verifier: Arc::new(MockWebhookVerifier::new()),
     }
 }
 
@@ -216,7 +228,9 @@ pub fn feature_gate_app(
 
 /// Build the router including the authority routes that need backend state —
 /// the auth-backed `GET /me` (via the dev store) plus `POST /license/refresh`,
-/// which signs short-lived tokens with the backend key held in [`LicenseState`].
+/// which authenticates the caller, resolves their entitlements server-side, and
+/// signs a short-lived token with the backend key held in [`LicenseState`]
+/// (issue #56). The route reads no account/plan from the request body.
 ///
 /// `/license/refresh` carries its own [`LicenseState`]; `/me` keeps the auth
 /// state applied in [`app`]. Both routes are mounted — neither is dropped.

@@ -26,11 +26,14 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 use shared::{PlanTier, SubscriptionStatus};
 
@@ -99,40 +102,128 @@ impl WebhookVerifier for MockWebhookVerifier {
     }
 }
 
-/// The real Stripe webhook verifier — the live seam behind the same trait.
+/// How far the signed timestamp may be from now before a webhook is rejected as
+/// stale. Bounds the replay window: a captured-and-replayed signed request stops
+/// verifying once it ages past this. Matches Stripe's documented 5-minute default.
+pub const DEFAULT_TIMESTAMP_TOLERANCE_SECS: u64 = 300;
+
+/// The real Stripe webhook verifier — the live seam behind the same trait
+/// (issue #58).
 ///
-/// A compile-only stub today, mirroring [`crate::billing::StripeBillingProvider`]:
-/// it carries where the webhook signing secret will live and rejects every
-/// signature until the live HMAC verification lands in its own issue. Deliberately
-/// NOT wired into any default app or test, so the build needs no Stripe secret and
-/// the gate stays green. When the live integration lands, `verify` recomputes the
-/// `t`/`v1` HMAC-SHA256 over `timestamp.payload` with the signing secret and does
-/// a constant-time compare against the header — the trait and handler do not
-/// change.
+/// `verify` recomputes the Stripe `v1` signature — HMAC-SHA256 over the ASCII
+/// bytes `"{t}.{payload}"` keyed by the webhook signing secret — and compares it
+/// against the `v1=` value in the `Stripe-Signature` header in constant time
+/// (`hmac::Mac::verify_slice`, subtle-backed; never `==` on the MAC bytes). It
+/// also rejects a timestamp outside [`DEFAULT_TIMESTAMP_TOLERANCE_SECS`] of now,
+/// which bounds replay. The signing secret (`whsec_…`) is held only here, in the
+/// backend, never serialized, never sent to the desktop (ADR-0001/0002).
 #[derive(Debug, Clone)]
 pub struct StripeWebhookVerifier {
-    /// The Stripe webhook signing secret (`whsec_…`). Held only here, in the
-    /// backend, never serialized, never sent to the desktop (ADR-0001/0002).
-    _signing_secret: String,
+    signing_secret: String,
+    tolerance_secs: u64,
 }
 
 impl StripeWebhookVerifier {
-    /// Construct the real verifier from a webhook signing secret. Present so the
-    /// production wiring has a constructor; the live HMAC check lands in a
-    /// follow-up issue.
+    /// Construct the real verifier from a webhook signing secret, using the
+    /// default timestamp tolerance.
     pub fn new(signing_secret: impl Into<String>) -> Self {
         Self {
-            _signing_secret: signing_secret.into(),
+            signing_secret: signing_secret.into(),
+            tolerance_secs: DEFAULT_TIMESTAMP_TOLERANCE_SECS,
         }
+    }
+
+    /// Verify `payload` against the `Stripe-Signature` header at a supplied `now`
+    /// (unix epoch seconds). The clock is injected so the staleness window is
+    /// deterministic in tests; the trait [`WebhookVerifier::verify`] reads the
+    /// real clock and delegates here.
+    ///
+    /// Rejects (as [`WebhookError::InvalidSignature`]) when: the header is absent
+    /// or malformed (missing/`unparseable `t`/`v1`); the timestamp is outside the
+    /// tolerance window (replay defense); or the recomputed HMAC does not match the
+    /// header's `v1` in constant time.
+    pub fn verify_at(
+        &self,
+        payload: &[u8],
+        signature: Option<&str>,
+        now: u64,
+    ) -> Result<(), WebhookError> {
+        let header = signature.ok_or(WebhookError::InvalidSignature)?;
+        let (timestamp, v1_hex) = parse_signature_header(header)?;
+
+        // Replay defense: reject a timestamp too far from now in either direction.
+        if now.abs_diff(timestamp) > self.tolerance_secs {
+            return Err(WebhookError::InvalidSignature);
+        }
+
+        // The expected signature bytes from the header (hex → bytes). A bad hex
+        // string is a malformed signature, not a trusted one.
+        let expected = decode_hex(v1_hex).ok_or(WebhookError::InvalidSignature)?;
+
+        // Recompute HMAC-SHA256 over "{t}.{payload}" and constant-time compare.
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.signing_secret.as_bytes())
+            .map_err(|_| WebhookError::InvalidSignature)?;
+        mac.update(timestamp.to_string().as_bytes());
+        mac.update(b".");
+        mac.update(payload);
+        mac.verify_slice(&expected)
+            .map_err(|_| WebhookError::InvalidSignature)
     }
 }
 
 impl WebhookVerifier for StripeWebhookVerifier {
-    fn verify(&self, _payload: &[u8], _signature: Option<&str>) -> Result<(), WebhookError> {
-        // Live HMAC-SHA256 verification lands in a follow-up issue; until then the
-        // real verifier trusts nothing rather than silently accepting.
-        Err(WebhookError::InvalidSignature)
+    fn verify(&self, payload: &[u8], signature: Option<&str>) -> Result<(), WebhookError> {
+        self.verify_at(payload, signature, now_unix())
     }
+}
+
+/// Parse a `Stripe-Signature` header (`t=<ts>,v1=<hex>[,v1=<hex>…]`) into the
+/// timestamp and the FIRST `v1` scheme value. Returns `None` on any missing or
+/// unparseable field — a malformed header is never treated as a trusted one.
+fn parse_signature_header(header: &str) -> Result<(u64, &str), WebhookError> {
+    let mut timestamp: Option<u64> = None;
+    let mut v1: Option<&str> = None;
+    for part in header.split(',') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "t" => timestamp = value.trim().parse().ok(),
+            "v1" if v1.is_none() => v1 = Some(value.trim()),
+            _ => {}
+        }
+    }
+    match (timestamp, v1) {
+        (Some(t), Some(sig)) => Ok((t, sig)),
+        _ => Err(WebhookError::InvalidSignature),
+    }
+}
+
+/// Decode a lowercase/uppercase hex string into bytes, or `None` on any non-hex
+/// digit or odd length. Used to turn the header's `v1` hex into the bytes the
+/// constant-time MAC compare runs against.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Some(out)
+}
+
+/// The current wall-clock instant in unix epoch seconds. Isolated so the pure
+/// verification path ([`StripeWebhookVerifier::verify_at`]) never reads the clock
+/// directly.
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -453,13 +544,132 @@ mod tests {
         assert_eq!(v.verify(b"body", None), Err(WebhookError::InvalidSignature));
     }
 
+    /// Build a valid Stripe `t=<ts>,v1=<hex>` signature header for `payload` under
+    /// `secret`, exactly as Stripe constructs it: HMAC-SHA256 over the ASCII bytes
+    /// `"{ts}.{payload}"`. The test mirror of the verifier's own recomputation.
+    fn sign(secret: &str, ts: u64, payload: &[u8]) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(ts.to_string().as_bytes());
+        mac.update(b".");
+        mac.update(payload);
+        let hex = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        format!("t={ts},v1={hex}")
+    }
+
+    const SECRET: &str = "whsec_test_secret_value";
+
     #[test]
-    fn real_verifier_rejects_until_wired() {
-        // The real seam exists behind the SAME trait, compiles without a secret,
-        // and must never silently accept until the live HMAC check lands.
-        let v = StripeWebhookVerifier::new("whsec_placeholder");
+    fn real_verifier_accepts_a_correctly_signed_payload() {
+        let v = StripeWebhookVerifier::new(SECRET);
+        let payload = br#"{"id":"evt_1","type":"checkout.session.completed"}"#;
+        let ts = now_unix();
+        let header = sign(SECRET, ts, payload);
+        assert_eq!(v.verify_at(payload, Some(&header), ts), Ok(()));
+    }
+
+    #[test]
+    fn real_verifier_rejects_a_tampered_payload() {
+        let v = StripeWebhookVerifier::new(SECRET);
+        let ts = now_unix();
+        // Sign the original, then verify a DIFFERENT body against that signature.
+        let header = sign(SECRET, ts, b"original body");
         assert_eq!(
-            v.verify(b"body", Some("t=1,v1=anything")),
+            v.verify_at(b"tampered body", Some(&header), ts),
+            Err(WebhookError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn real_verifier_rejects_a_forged_signature() {
+        let v = StripeWebhookVerifier::new(SECRET);
+        let ts = now_unix();
+        let forged = format!("t={ts},v1={}", "0".repeat(64));
+        assert_eq!(
+            v.verify_at(b"body", Some(&forged), ts),
+            Err(WebhookError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn real_verifier_rejects_a_wrong_secret() {
+        let v = StripeWebhookVerifier::new(SECRET);
+        let ts = now_unix();
+        // Signed under a different secret than the verifier holds.
+        let header = sign("whsec_some_other_secret", ts, b"body");
+        assert_eq!(
+            v.verify_at(b"body", Some(&header), ts),
+            Err(WebhookError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn real_verifier_rejects_a_stale_timestamp() {
+        let v = StripeWebhookVerifier::new(SECRET);
+        let now = 1_000_000_000u64;
+        // Signed 10 minutes ago — outside the default tolerance window.
+        let signed_ts = now - 600;
+        let header = sign(SECRET, signed_ts, b"body");
+        assert_eq!(
+            v.verify_at(b"body", Some(&header), now),
+            Err(WebhookError::InvalidSignature),
+            "a timestamp outside the tolerance window must be rejected (replay defense)"
+        );
+    }
+
+    #[test]
+    fn real_verifier_accepts_a_recent_timestamp_within_tolerance() {
+        let v = StripeWebhookVerifier::new(SECRET);
+        let now = 1_000_000_000u64;
+        let signed_ts = now - 60; // a minute ago, inside tolerance
+        let header = sign(SECRET, signed_ts, b"body");
+        assert_eq!(v.verify_at(b"body", Some(&header), now), Ok(()));
+    }
+
+    #[test]
+    fn real_verifier_rejects_malformed_v1_hex_without_panicking() {
+        // A non-hex / odd-length `v1` must fail closed (InvalidSignature), never
+        // panic — a panic in a verifier can fail OPEN as a 500 in some middleware.
+        let v = StripeWebhookVerifier::new(SECRET);
+        let ts = now_unix();
+        assert_eq!(
+            v.verify_at(b"body", Some(&format!("t={ts},v1=nothex!!")), ts),
+            Err(WebhookError::InvalidSignature)
+        );
+        assert_eq!(
+            v.verify_at(b"body", Some(&format!("t={ts},v1=abc")), ts), // odd length
+            Err(WebhookError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn real_verifier_rejects_a_malformed_header() {
+        let v = StripeWebhookVerifier::new(SECRET);
+        let ts = now_unix();
+        // Missing v1.
+        assert_eq!(
+            v.verify_at(b"body", Some(&format!("t={ts}")), ts),
+            Err(WebhookError::InvalidSignature)
+        );
+        // Missing t.
+        assert_eq!(
+            v.verify_at(b"body", Some("v1=deadbeef"), ts),
+            Err(WebhookError::InvalidSignature)
+        );
+        // No header at all.
+        assert_eq!(
+            v.verify_at(b"body", None, ts),
+            Err(WebhookError::InvalidSignature)
+        );
+        // Non-numeric timestamp.
+        assert_eq!(
+            v.verify_at(b"body", Some("t=notanumber,v1=deadbeef"), ts),
             Err(WebhookError::InvalidSignature)
         );
     }

@@ -23,7 +23,10 @@ use shared::{PlanTier, SubscriptionStatus};
 use tower::ServiceExt;
 
 use api::entitlement::{AccountState, InMemoryAccountStateStore};
-use api::webhook::{MockWebhookVerifier, ProcessedEventStore, WebhookState, MOCK_VALID_SIGNATURE};
+use api::webhook::{
+    MockWebhookVerifier, ProcessedEventStore, StripeWebhookVerifier, WebhookState,
+    MOCK_VALID_SIGNATURE,
+};
 
 /// The Stripe signature header name. The handler reads the signature from here
 /// and hands it to the verifier; the mock verifier accepts exactly
@@ -46,6 +49,21 @@ fn checkout_completed_pro(event_id: &str) -> String {
             "client_reference_id": "{ACCT}",
             "metadata": {{ "plan": "pro" }},
             "subscription": "sub_123"
+          }} }}
+        }}"#
+    )
+}
+
+/// A `checkout.session.completed` fixture for an arbitrary account that activates
+/// a Pro plan. Used to prove a forged event leaves NO state for a fresh account.
+fn checkout_completed_for(account_id: &str, event_id: &str) -> String {
+    format!(
+        r#"{{
+          "id": "{event_id}",
+          "type": "checkout.session.completed",
+          "data": {{ "object": {{
+            "client_reference_id": "{account_id}",
+            "metadata": {{ "plan": "pro" }}
           }} }}
         }}"#
     )
@@ -410,5 +428,211 @@ async fn webhook_reconcile_is_reflected_by_entitlements_on_the_same_app() {
     assert!(
         !after.entitlements.allows(FeatureKey::CloudSync),
         "canceled+elapsed must collapse paid access to free after reconcile"
+    );
+}
+
+// --- #58: the REAL Stripe HMAC verifier, end-to-end through the router ---
+
+/// The webhook signing secret used by the real-verifier fixtures. A test value —
+/// the live secret is never in source, and the leak scan (desktop tree) never
+/// sees this api-tree test.
+const TEST_WHSEC: &str = "whsec_test_fixture_secret";
+
+/// The current unix time, so fixture signatures fall inside the verifier's
+/// staleness tolerance window.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Build a valid Stripe `t=<ts>,v1=<hex>` signature header for `payload` under
+/// `TEST_WHSEC`, exactly as Stripe does: HMAC-SHA256 over `"{ts}.{payload}"`.
+fn stripe_sign(ts: u64, payload: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = Hmac::<Sha256>::new_from_slice(TEST_WHSEC.as_bytes()).unwrap();
+    mac.update(ts.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(payload);
+    let hex = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    format!("t={ts},v1={hex}")
+}
+
+/// A webhook router wired to the REAL `StripeWebhookVerifier` (test secret), over
+/// a shared account store the test can read back.
+fn app_with_real_verifier(accounts: Arc<InMemoryAccountStateStore>) -> axum::Router {
+    api::webhook_app(WebhookState {
+        accounts,
+        processed: Arc::new(ProcessedEventStore::new()),
+        verifier: Arc::new(StripeWebhookVerifier::new(TEST_WHSEC)),
+    })
+}
+
+/// ISC-23: a payload signed with the test secret in the real `t/v1` scheme is
+/// accepted by the real verifier and reconciles account state end-to-end.
+#[tokio::test]
+async fn real_verifier_accepts_a_correctly_signed_event_and_reconciles() {
+    let accounts = Arc::new(InMemoryAccountStateStore::new());
+    let app = app_with_real_verifier(accounts.clone());
+
+    let body = checkout_completed_pro("evt_real_ok");
+    let sig = stripe_sign(now(), body.as_bytes());
+
+    let status = post_event(app, Some(&sig), &body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a correctly-signed event is accepted"
+    );
+    let state = accounts.account_state(ACCT).expect("account reconciled");
+    assert_eq!(state.plan, PlanTier::Pro);
+    assert_eq!(state.status, SubscriptionStatus::Active);
+}
+
+/// ISC-24: a forged signature is rejected by the real verifier with 400 and NO
+/// state effect — the exact attack #58 closes (the live binary trusted a constant
+/// before).
+#[tokio::test]
+async fn real_verifier_rejects_a_forged_signature_with_no_state_effect() {
+    let accounts = Arc::new(InMemoryAccountStateStore::new());
+    let app = app_with_real_verifier(accounts.clone());
+
+    let body = checkout_completed_pro("evt_real_forged");
+    let forged = format!("t={},v1={}", now(), "0".repeat(64));
+
+    let status = post_event(app, Some(&forged), &body).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a forged signature is rejected"
+    );
+    assert_eq!(
+        accounts.account_state(ACCT),
+        None,
+        "a rejected event must not touch account state"
+    );
+}
+
+/// ISC-24 (variant): a payload tampered AFTER signing is rejected — the signature
+/// is over the exact bytes, so any mutation breaks it.
+#[tokio::test]
+async fn real_verifier_rejects_a_tampered_body() {
+    let accounts = Arc::new(InMemoryAccountStateStore::new());
+    let app = app_with_real_verifier(accounts.clone());
+
+    let original = checkout_completed_pro("evt_real_tamper");
+    let sig = stripe_sign(now(), original.as_bytes());
+    // POST a DIFFERENT body (different account) under the original signature.
+    let tampered = original.replace(ACCT, "acct_attacker");
+
+    let status = post_event(app, Some(&sig), &tampered).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(accounts.account_state("acct_attacker"), None);
+    assert_eq!(accounts.account_state(ACCT), None);
+}
+
+/// ISC-26: the live app builder wired to a Stripe secret mounts the REAL
+/// verifier, so a forged signature is rejected (the mock's constant would have
+/// been accepted). This proves selection, not just the verifier in isolation.
+#[tokio::test]
+async fn app_with_stripe_secret_uses_the_real_verifier_and_rejects_a_forgery() {
+    let app = api::app_with_stripe_secret(TEST_WHSEC);
+    // The EXACT exploit #58 closes: the mock's constant signature, now inert. A
+    // checkout for a brand-new account must be REJECTED and leave NO state, so the
+    // attacker cannot grant that account a paid plan with the source constant.
+    let body = checkout_completed_for("acct_attacker_const", "evt_sel_mock_const");
+    let mock_const = post_event(app, Some(MOCK_VALID_SIGNATURE), &body).await;
+    assert_eq!(
+        mock_const,
+        StatusCode::BAD_REQUEST,
+        "the real verifier must reject the mock's constant signature"
+    );
+    // No fallback to mock when the secret is set: the forged event had no effect.
+    let after = api::app()
+        .oneshot(
+            Request::builder()
+                .uri("/me/entitlements")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", api::store::DEV_TOKEN),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.status(), StatusCode::OK); // unrelated dev account untouched
+
+    // A correctly-signed event IS accepted by the same real-verifier app.
+    let app = api::app_with_stripe_secret(TEST_WHSEC);
+    let sig = stripe_sign(now(), body.as_bytes());
+    assert_eq!(
+        post_event(app, Some(&sig), &body).await,
+        StatusCode::OK,
+        "a correctly-signed event is accepted through the real-verifier app"
+    );
+}
+
+/// ISC-26 (cross-check): the default `api::app()` (no secret) still uses the mock
+/// verifier, so dev/CI exercise the path without a live secret — selection only
+/// flips to real when the secret is configured.
+#[tokio::test]
+async fn default_app_still_uses_the_mock_verifier_without_a_secret() {
+    let body = checkout_completed_pro("evt_default_mock");
+    assert_eq!(
+        post_event(api::app(), Some(MOCK_VALID_SIGNATURE), &body).await,
+        StatusCode::OK,
+        "the default dev app accepts the mock's constant (no live secret configured)"
+    );
+}
+
+/// ISC-25: idempotency still holds with the real verifier — the same correctly-
+/// signed event id delivered twice produces exactly one state effect.
+#[tokio::test]
+async fn real_verifier_preserves_idempotency_on_redelivery() {
+    let accounts = Arc::new(InMemoryAccountStateStore::new());
+    let app = app_with_real_verifier(accounts.clone());
+
+    // 1) checkout completed → active Pro.
+    let body = checkout_completed_pro("evt_real_dup");
+    let sig = stripe_sign(now(), body.as_bytes());
+    assert_eq!(
+        post_event(app.clone(), Some(&sig), &body).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        accounts.account_state(ACCT).unwrap().status,
+        SubscriptionStatus::Active
+    );
+
+    // 2) a different (validly-signed) event flips status to past-due.
+    let upd = subscription_updated_past_due("evt_real_after");
+    let upd_sig = stripe_sign(now(), upd.as_bytes());
+    assert_eq!(
+        post_event(app.clone(), Some(&upd_sig), &upd).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        accounts.account_state(ACCT).unwrap().status,
+        SubscriptionStatus::PastDue
+    );
+
+    // 3) REPLAY the original signed checkout id — dedup makes it a no-op even with
+    //    a valid signature, so state stays past-due (not re-activated).
+    assert_eq!(
+        post_event(app.clone(), Some(&sig), &body).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        accounts.account_state(ACCT).unwrap().status,
+        SubscriptionStatus::PastDue,
+        "a redelivered valid event id must not re-apply its effect"
     );
 }

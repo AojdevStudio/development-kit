@@ -41,6 +41,11 @@ axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Stripe webhook HMAC-SHA256 signature verification (services/api ONLY — billing
+# authority is backend-only, ADR-0001/0002; these must never reach the desktop
+# tree, where the cargo-deny bans + crate-edge gate enforce the boundary).
+hmac = "0.12"
+sha2 = "0.10"
 
 [profile.release]
 strip = true
