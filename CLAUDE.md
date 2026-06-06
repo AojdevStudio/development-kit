@@ -7,6 +7,7 @@ Reusable, agent-buildable foundation for desktop SaaS apps: Tauri v2 + React/Vit
 - `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md` — the authority model and non-negotiables.
 - `docs/DEVELOPMENT-KIT-GOAL-PRD.md` — the Persistent Build Goal, scope, deep modules, API surface, testing matrix, and acceptance criteria ("done" is defined here).
 - `docs/PRD-INTAKE-CONTRACT.md` — how a new product PRD plugs into the kit.
+- `docs/PRODUCT-MODULE-SEAM.md` — the `ProductModule` trait + conventions for how a product module plugs into all six dimensions (workflows, screens, tables, commands, feature keys, tests) without editing the foundation. See ADR-0002.
 
 ## Target workspace layout
 

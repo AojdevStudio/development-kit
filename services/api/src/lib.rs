@@ -23,6 +23,7 @@ pub mod license;
 pub mod me;
 pub mod me_entitlements;
 pub mod principal;
+pub mod product_module;
 pub mod store;
 pub mod webhook;
 
