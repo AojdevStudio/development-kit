@@ -199,16 +199,35 @@ pub trait AccountStateStore: Send + Sync {
     fn account_state(&self, account_id: &str) -> Option<AccountState>;
 }
 
+/// Write seam for account billing state: the durable side of the reconcile
+/// contract (issue #32). The Stripe webhook reconciler depends on this trait —
+/// never on a concrete store — so the in-memory store now and the Postgres-backed
+/// store later are interchangeable behind it (DIP), and a handler can hold one
+/// `Arc<dyn MutableAccountStateStore>` to both read and persist.
+pub trait MutableAccountStateStore: AccountStateStore {
+    /// Persist `state` for `account_id`, replacing any existing binding. Takes
+    /// `&self` (not `&mut self`) so the store can be shared behind an `Arc` and
+    /// written concurrently — the implementation owns its synchronization.
+    fn set_account_state(&self, account_id: &str, state: AccountState);
+}
+
 /// An in-memory [`AccountStateStore`] — the walking-skeleton billing-state
-/// backing for `GET /me/entitlements`.
+/// backing for `GET /me/entitlements` and the Stripe webhook reconciler.
 ///
-/// Mirrors [`crate::store::InMemoryPrincipalStore`]: a fixed map of account ids
-/// to billing state so the entitlement path is real and end-to-end testable now,
+/// Mirrors [`crate::store::InMemoryPrincipalStore`]: a map of account ids to
+/// billing state so the entitlement path is real and end-to-end testable now,
 /// before the durable Postgres-backed store exists. The swap changes nothing
-/// above the [`AccountStateStore`] trait.
+/// above the [`AccountStateStore`] / [`MutableAccountStateStore`] traits.
+///
+/// The backing is `Arc<Mutex<…>>` so the store has *interior mutability*: the
+/// webhook handler (issue #32) writes reconciled state through a shared `&self`
+/// while `GET /me/entitlements` reads from the *same* store through another
+/// `Arc` clone — both see one consistent map. Cloning the store shares the map
+/// (the durable Postgres store will share a pool the same way), which is exactly
+/// what the read-after-write reconcile contract needs.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryAccountStateStore {
-    by_account: std::collections::HashMap<String, AccountState>,
+    by_account: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, AccountState>>>,
 }
 
 impl InMemoryAccountStateStore {
@@ -227,10 +246,32 @@ impl InMemoryAccountStateStore {
         )
     }
 
-    /// Bind `account_id` to `state`, replacing any existing binding. Chainable.
-    pub fn with_account(mut self, account_id: impl Into<String>, state: AccountState) -> Self {
-        self.by_account.insert(account_id.into(), state);
+    /// Bind `account_id` to `state`, replacing any existing binding. Chainable
+    /// for one-expression seeding.
+    pub fn with_account(self, account_id: impl Into<String>, state: AccountState) -> Self {
+        self.set_account_state(account_id, state);
         self
+    }
+
+    /// The account's current billing state, or `None` if unknown. Inherent twin
+    /// of the [`AccountStateStore`] trait method so callers holding the concrete
+    /// store (tests, the reconciler) read it without importing the trait.
+    pub fn account_state(&self, account_id: &str) -> Option<AccountState> {
+        self.by_account
+            .lock()
+            .expect("account-state store mutex poisoned")
+            .get(account_id)
+            .cloned()
+    }
+
+    /// Persist `state` for `account_id`, replacing any existing binding. The
+    /// webhook reconciler's single write seam: derive an [`AccountState`] from a
+    /// billing event and commit it here so the next entitlement read reflects it.
+    pub fn set_account_state(&self, account_id: impl Into<String>, state: AccountState) {
+        self.by_account
+            .lock()
+            .expect("account-state store mutex poisoned")
+            .insert(account_id.into(), state);
     }
 }
 
@@ -247,7 +288,14 @@ pub fn dev_account_state() -> AccountState {
 
 impl AccountStateStore for InMemoryAccountStateStore {
     fn account_state(&self, account_id: &str) -> Option<AccountState> {
-        self.by_account.get(account_id).cloned()
+        // Delegate to the inherent method so read logic lives in one place.
+        InMemoryAccountStateStore::account_state(self, account_id)
+    }
+}
+
+impl MutableAccountStateStore for InMemoryAccountStateStore {
+    fn set_account_state(&self, account_id: &str, state: AccountState) {
+        InMemoryAccountStateStore::set_account_state(self, account_id, state);
     }
 }
 
@@ -439,5 +487,63 @@ mod tests {
     fn unknown_account_resolves_none() {
         let store = InMemoryAccountStateStore::dev_seed();
         assert_eq!(store.account_state("acct_nope"), None);
+    }
+
+    // --- #32: the store is writable through &self (reconcile write seam) ---
+    #[test]
+    fn set_account_state_is_readable_back() {
+        let store = InMemoryAccountStateStore::new();
+        assert_eq!(store.account_state("acct_w"), None);
+        store.set_account_state("acct_w", state(PlanTier::Team, SubscriptionStatus::Active));
+        let got = store
+            .account_state("acct_w")
+            .expect("written state reads back");
+        assert_eq!(got.plan, PlanTier::Team);
+        assert_eq!(got.status, SubscriptionStatus::Active);
+    }
+
+    // --- #32: a write replaces the prior binding (reconcile overwrites) ---
+    #[test]
+    fn set_account_state_replaces_prior_binding() {
+        let store = InMemoryAccountStateStore::new()
+            .with_account("acct_w", state(PlanTier::Pro, SubscriptionStatus::Active));
+        store.set_account_state("acct_w", state(PlanTier::Pro, SubscriptionStatus::PastDue));
+        assert_eq!(
+            store.account_state("acct_w").unwrap().status,
+            SubscriptionStatus::PastDue
+        );
+    }
+
+    // --- #32: cloned handles share one map (read-after-write across Arc) ---
+    #[test]
+    fn cloned_store_shares_state_so_writes_are_visible() {
+        // The webhook handler writes through one handle; `/me/entitlements` reads
+        // through another clone of the same store. They must see one map.
+        let writer = InMemoryAccountStateStore::new();
+        let reader = writer.clone();
+        writer.set_account_state(
+            "acct_shared",
+            state(PlanTier::Pro, SubscriptionStatus::Active),
+        );
+        assert_eq!(
+            reader.account_state("acct_shared").map(|s| s.status),
+            Some(SubscriptionStatus::Active),
+            "a write on one handle is visible through a clone of the same store"
+        );
+    }
+
+    // --- #32: the write seam works through the trait object (DIP) ---
+    #[test]
+    fn mutable_store_writes_through_trait_object() {
+        let store = InMemoryAccountStateStore::new();
+        let dynamic: &dyn MutableAccountStateStore = &store;
+        dynamic.set_account_state(
+            "acct_dyn",
+            state(PlanTier::Starter, SubscriptionStatus::Active),
+        );
+        assert_eq!(
+            store.account_state("acct_dyn").unwrap().plan,
+            PlanTier::Starter
+        );
     }
 }

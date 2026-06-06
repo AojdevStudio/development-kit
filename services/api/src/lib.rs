@@ -6,10 +6,11 @@
 //! short-lived signed license tokens for offline paid access, and
 //! `GET /me/entitlements` (issue #29), which runs the entitlement engine over an
 //! account's billing state and returns the paid access the backend computed for
-//! it. The remaining surfaces declared in `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md`
-//! (`/billing/*`, `/stripe/webhook`) land in their own issues. The router is
-//! built as a pure value so it can be exercised in tests without binding a
-//! socket.
+//! it, `POST /billing/*` (issue #31), which mints provider session URLs, and
+//! `POST /webhooks/stripe` (issue #32), which ingests Stripe billing events and
+//! idempotently reconciles account state so entitlement reflects billing changes.
+//! The router is built as a pure value so it can be exercised in tests without
+//! binding a socket.
 
 #![forbid(unsafe_code)]
 
@@ -23,6 +24,7 @@ pub mod me;
 pub mod me_entitlements;
 pub mod principal;
 pub mod store;
+pub mod webhook;
 
 use std::sync::Arc;
 
@@ -35,6 +37,7 @@ use crate::entitlement::{AccountStateStore, InMemoryAccountStateStore};
 use crate::license::LicenseState;
 use crate::me::{get_me, AuthState};
 use crate::me_entitlements::EntitlementsState;
+use crate::webhook::{MockWebhookVerifier, ProcessedEventStore, WebhookState};
 
 /// Build the application router with a caller-supplied principal store. Kept
 /// separate from `serve` so tests can drive it via `tower::ServiceExt::oneshot`
@@ -61,11 +64,43 @@ pub fn app_with_store(store: Arc<dyn PrincipalStore>) -> Router {
 /// here too, wired to the [`MockBillingProvider`] so the dev server and tests
 /// exercise the full checkout/portal flow with NO Stripe key. The real provider
 /// drops in behind the same trait via [`billing_app`] for production.
+///
+/// The Stripe webhook route (`/webhooks/stripe`, issue #32) merges here too,
+/// wired to the [`MockWebhookVerifier`] so the dev server and tests exercise the
+/// full ingest+reconcile path with NO Stripe webhook secret. It shares the *same*
+/// account-state store as `/me/entitlements` (one [`InMemoryAccountStateStore`],
+/// cloned), so an event the webhook reconciles is visible to the next
+/// entitlements read — the read-after-write reconcile contract.
 pub fn app() -> Router {
+    let accounts = InMemoryAccountStateStore::dev_seed();
     app_with_store(Arc::new(store::InMemoryPrincipalStore::dev_seed()))
         .merge(feature_gate::router())
-        .merge(me_entitlements::router(dev_entitlements_state()))
+        .merge(me_entitlements::router(dev_entitlements_state_with(
+            accounts.clone(),
+        )))
         .merge(billing::router(dev_billing_state()))
+        .merge(webhook::router(dev_webhook_state(accounts)))
+}
+
+/// The walking-skeleton state for `POST /webhooks/stripe`: a fresh processed-event
+/// store, the deterministic [`MockWebhookVerifier`] (no live secret), and the
+/// *shared* dev account-state store, so a reconciled event is reflected by the
+/// next `GET /me/entitlements` against the same `api::app()`.
+fn dev_webhook_state(accounts: InMemoryAccountStateStore) -> WebhookState {
+    WebhookState {
+        accounts: Arc::new(accounts),
+        processed: Arc::new(ProcessedEventStore::new()),
+        verifier: Arc::new(MockWebhookVerifier::new()),
+    }
+}
+
+/// Build the `/webhooks/stripe` router with caller-supplied stores, dedup store,
+/// and verifier. Kept separate so integration tests drive the endpoint via
+/// `tower::ServiceExt::oneshot` with a chosen verifier (mock for tests, real
+/// Stripe in production) and an inspectable account store, without binding a
+/// socket.
+pub fn webhook_app(state: WebhookState) -> Router {
+    webhook::router(state)
 }
 
 /// The walking-skeleton billing state: the dev principal store plus the
@@ -93,14 +128,16 @@ pub fn billing_app(
 }
 
 /// The walking-skeleton state for `GET /me/entitlements`: the dev principal store
-/// (resolves [`store::DEV_TOKEN`]) plus the dev account-state store (seeds the dev
-/// account to an active Pro subscription), so the desktop dev build loads real
-/// paid entitlements end-to-end (issue #29). The durable Postgres-backed stores
-/// replace both behind the same traits.
-fn dev_entitlements_state() -> EntitlementsState {
+/// (resolves [`store::DEV_TOKEN`]) plus a caller-supplied account-state store, so
+/// the desktop dev build loads real paid entitlements end-to-end (issue #29). The
+/// store is supplied (not constructed here) so the runnable app shares *one*
+/// account store between `/me/entitlements` and the webhook reconciler (issue
+/// #32) rather than each holding an isolated copy. The durable Postgres-backed
+/// stores replace both behind the same traits.
+fn dev_entitlements_state_with(accounts: InMemoryAccountStateStore) -> EntitlementsState {
     EntitlementsState {
         principals: Arc::new(store::InMemoryPrincipalStore::dev_seed()),
-        accounts: Arc::new(InMemoryAccountStateStore::dev_seed()),
+        accounts: Arc::new(accounts),
     }
 }
 
