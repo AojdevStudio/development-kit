@@ -266,9 +266,39 @@ pub fn evaluate_product_coverage(
 /// held to the same non-React-gate standard. This is the function the gate
 /// registry wires as a `Check`, so a product paid key without a gate test fails
 /// CI exactly as a baseline one would.
+///
+/// Issue #59 hardening adds a third layer — the **derivation backstop**
+/// ([`seam_scan::evaluate_derivation`]): it scans the live product-seam source for
+/// the keys actually gated in the code and fails if any is missing from
+/// `product_key_registry()`. Coverage (above) proves every *registered* key has a
+/// gate test; the backstop proves every *gated* key is registered in the first
+/// place. Together they close the loop: a paid product key can neither be gated
+/// without a test (coverage) nor gated without being registered (backstop).
 pub fn run_feature_key_coverage() -> Result<(), String> {
     evaluate_coverage(&FeatureKey::ALL, &coverage_manifest())?;
-    evaluate_product_coverage(&product_key_registry(), &product_coverage_manifest())
+    evaluate_product_coverage(&product_key_registry(), &product_coverage_manifest())?;
+    run_product_key_derivation_backstop()
+}
+
+/// Run the issue-#59 derivation backstop against the live seam source: every
+/// product key gated in `services/api/src/products` / the desktop product tree
+/// must be present in [`product_key_registry`]. Resolves the workspace root the
+/// same way the rest of xtask does (parent of the xtask crate dir).
+pub fn run_product_key_derivation_backstop() -> Result<(), String> {
+    let root = workspace_root();
+    let registered: Vec<ProductFeatureKey> =
+        product_key_registry().into_iter().map(|e| e.key).collect();
+    crate::seam_scan::evaluate_derivation(&root, &registered)
+}
+
+/// The workspace root: the parent of the xtask crate directory. Mirrors the
+/// helper in `lib.rs`/`main.rs` so the backstop resolves the real seam source
+/// regardless of the working directory the gate runs from.
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
 /// The gate check: every key in `all_keys` must be covered by `entries`.
@@ -589,6 +619,21 @@ mod tests {
     }
 
     // --- #37: the Notes sample product's paid key is counted by the gate ---
+    // --- #59: the derivation backstop is wired into the live coverage run and is
+    // green for the right reason (the live seam keys are all registered). ---
+    #[test]
+    fn the_derivation_backstop_runs_and_passes_live() {
+        // Wired into run_feature_key_coverage via run_product_key_derivation_backstop;
+        // the live repo has notes + vault both gated AND registered, so it passes.
+        assert_eq!(
+            run_product_key_derivation_backstop(),
+            Ok(()),
+            "every product key gated in seam source must be registered"
+        );
+        // And the full coverage run (which now also calls the backstop) is green.
+        assert_eq!(run_feature_key_coverage(), Ok(()));
+    }
+
     #[test]
     fn the_notes_paid_key_is_registered_and_covered() {
         // The capstone: the sample product's one paid key `notes.publish_note` is

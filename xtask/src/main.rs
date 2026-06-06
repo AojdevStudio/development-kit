@@ -198,6 +198,12 @@ fn run_edges() -> ExitCode {
 }
 
 fn edges_step() -> Result<(), String> {
+    // #59: rule-coverage first — enumerate the LIVE workspace packages and fail if
+    // any non-exempt one has NO edge rule (silently unconstrained) before checking
+    // the edges themselves. Default-deny against reality, so a new client crate is
+    // caught the moment it lands. Complements deny.toml's transitive ban backstop.
+    xtask::check_rule_coverage()?;
+
     let violations = check_dependency_edges()?;
     if violations.is_empty() {
         Ok(())

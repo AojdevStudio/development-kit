@@ -14,6 +14,7 @@ pub mod coverage;
 pub mod edges;
 pub mod leakscan;
 pub mod registry;
+pub mod seam_scan;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ use std::process::Command;
 use cargo_metadata::MetadataCommand;
 
 use crate::bans::{bans_check_failed, cargo_deny_args, config_gaps};
-use crate::edges::{evaluate_edges, EdgeViolation, PackageDeps};
+use crate::edges::{evaluate_edges, evaluate_rule_coverage, EdgeViolation, PackageDeps};
 
 /// The desktop crate's manifest, relative to the workspace root. Rooting
 /// cargo-deny here is what scopes the supply-chain bans to the desktop tree.
@@ -142,4 +143,25 @@ pub fn check_dependency_edges() -> Result<Vec<EdgeViolation>, String> {
         .collect();
 
     Ok(evaluate_edges(&packages))
+}
+
+/// Rule-coverage check (issue #59): every workspace package that is not on the
+/// `RULE_EXEMPT_PACKAGES` list must carry an explicit `EdgeRule`, so a new client
+/// or authority crate cannot land silently unconstrained. Enumerates the *live*
+/// workspace package names from `cargo metadata` — default-deny against reality,
+/// not a hardcoded inclusion list.
+pub fn check_rule_coverage() -> Result<(), String> {
+    let metadata = MetadataCommand::new()
+        .exec()
+        .map_err(|e| format!("failed to run `cargo metadata`: {e}"))?;
+
+    let workspace_members: BTreeSet<_> = metadata.workspace_members.iter().cloned().collect();
+    let names: Vec<String> = metadata
+        .packages
+        .iter()
+        .filter(|p| workspace_members.contains(&p.id))
+        .map(|p| p.name.to_string())
+        .collect();
+
+    evaluate_rule_coverage(&names)
 }
