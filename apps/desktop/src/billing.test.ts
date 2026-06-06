@@ -5,6 +5,7 @@ import {
   fetchPortalUrl,
   openPortal,
   startCheckout,
+  systemBrowserOpener,
   type UrlOpener,
 } from "./billing";
 
@@ -90,6 +91,51 @@ describe("startCheckout", () => {
       startCheckout("http://localhost:8787", "bad", "pro", open, fakeFetch),
     ).rejects.toThrow(BillingRequestError);
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("systemBrowserOpener (default wired opener)", () => {
+  // The test environment has no DOM, so we install a minimal window host with a
+  // spy `open` for the duration of each test — this exercises the real opener
+  // logic (route external URL to the host's `open(url, "_blank")`) without pulling
+  // in a jsdom dependency.
+  function withFakeWindow<T>(fn: (open: ReturnType<typeof vi.fn>) => Promise<T>): Promise<T> {
+    const open = vi.fn();
+    const had = "window" in globalThis;
+    const prev = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = { open };
+    return fn(open).finally(() => {
+      if (had) (globalThis as { window?: unknown }).window = prev;
+      else delete (globalThis as { window?: unknown }).window;
+    });
+  }
+
+  it("opens an external URL in the system browser via window.open(_blank)", async () => {
+    await withFakeWindow(async (open) => {
+      await systemBrowserOpener(CHECKOUT_URL);
+      expect(open).toHaveBeenCalledWith(CHECKOUT_URL, "_blank");
+    });
+  });
+
+  it("is the wired default for startCheckout when no opener is injected", async () => {
+    await withFakeWindow(async (open) => {
+      const fakeFetch = (async () =>
+        new Response(JSON.stringify({ url: CHECKOUT_URL }), { status: 200 })) as unknown as typeof fetch;
+      // No opener argument: the real systemBrowserOpener default must be used.
+      await startCheckout("http://localhost:8787", "tok_alice", "pro", undefined, fakeFetch);
+      expect(open).toHaveBeenCalledWith(CHECKOUT_URL, "_blank");
+    });
+  });
+
+  it("throws when no system browser host is available", async () => {
+    const had = "window" in globalThis;
+    const prev = (globalThis as { window?: unknown }).window;
+    delete (globalThis as { window?: unknown }).window;
+    try {
+      await expect(systemBrowserOpener(CHECKOUT_URL)).rejects.toThrow(BillingRequestError);
+    } finally {
+      if (had) (globalThis as { window?: unknown }).window = prev;
+    }
   });
 });
 

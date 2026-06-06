@@ -36,6 +36,26 @@ export class BillingRequestError extends Error {
 export type UrlOpener = (url: string) => Promise<void>;
 
 /**
+ * The default opener: hands the URL to the host to open in the system browser.
+ *
+ * Inside a Tauri v2 webview, an external `https://` URL opened with
+ * `window.open(url, "_blank")` is routed to the OS default browser rather than a
+ * new in-app window — which is exactly the billing requirement: checkout and the
+ * customer portal must run in the real browser, never embedded (so the user sees
+ * Stripe's real URL bar). This is the wired production default; tests inject a
+ * fake opener instead. It pulls in no extra dependency and holds no Stripe secret.
+ */
+export const systemBrowserOpener: UrlOpener = async (url: string): Promise<void> => {
+  if (typeof globalThis.window?.open === "function") {
+    globalThis.window.open(url, "_blank");
+    return;
+  }
+  // No window host available (non-browser context): surface rather than silently
+  // drop, so a misconfigured caller is visible instead of a no-op "nothing opened".
+  throw new BillingRequestError("no system browser available to open billing URL");
+};
+
+/**
  * Validate and narrow an unknown JSON value into a session URL. The desktop
  * trusts the backend for *authority* but still validates the *shape* at the
  * boundary, so a malformed response surfaces as a clear error rather than opening
@@ -112,7 +132,7 @@ export async function startCheckout(
   baseUrl: string,
   token: string,
   plan: PlanTier,
-  open: UrlOpener,
+  open: UrlOpener = systemBrowserOpener,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
   const url = await fetchCheckoutUrl(baseUrl, token, plan, fetchImpl);
@@ -127,7 +147,7 @@ export async function startCheckout(
 export async function openPortal(
   baseUrl: string,
   token: string,
-  open: UrlOpener,
+  open: UrlOpener = systemBrowserOpener,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
   const url = await fetchPortalUrl(baseUrl, token, fetchImpl);
