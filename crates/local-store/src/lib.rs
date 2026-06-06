@@ -14,3 +14,4 @@ pub mod db;
 pub mod draft;
 pub mod error;
 pub mod migration;
+pub mod product_module;

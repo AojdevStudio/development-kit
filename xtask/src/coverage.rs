@@ -13,7 +13,7 @@
 //! that turns this into a registered gate check lives in `main.rs`; the manifest
 //! of which real tests cover which key lives in [`coverage_manifest`].
 
-use shared::FeatureKey;
+use shared::{FeatureKey, ProductFeatureKey};
 
 /// The enforcement layer a gate test exercises.
 ///
@@ -145,10 +145,104 @@ pub fn coverage_manifest() -> Vec<CoverageEntry> {
     ]
 }
 
-/// Run the feature-key coverage gate against the baseline keys and the live
-/// manifest. This is the function the gate registry wires as a `Check`.
+/// One product feature key declared by a plugged-in product module (issue #36),
+/// paired with the namespace that owns it. The product-module seam lets a product
+/// add gated capabilities WITHOUT editing the closed [`FeatureKey`] enum, so the
+/// coverage gate cannot iterate an enum to find them — products *register* their
+/// keys here instead. The gate then holds product keys to the exact same standard
+/// as baseline keys: every one needs a non-React gate test or CI goes red.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductKeyEntry {
+    /// The product key (`namespace.name`).
+    pub key: ProductFeatureKey,
+}
+
+/// One declaration that a real gate test covers a product `key` at `layer`.
+///
+/// Parallel to [`CoverageEntry`] but for product keys. `key` is the
+/// `namespace.name` wire string of the product key; `test` names the concrete
+/// `#[test]`/`#[tokio::test]` that enforces it, so the manifest can never claim
+/// coverage no test provides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductCoverageEntry {
+    pub key: ProductFeatureKey,
+    pub layer: GateLayer,
+    pub test: &'static str,
+}
+
+/// The product keys in `registered` that no entry in `entries` covers.
+///
+/// The product analogue of [`uncovered_keys`]: a product key is *covered* when at
+/// least one [`ProductCoverageEntry`] names it. Because [`GateLayer`] still has no
+/// React variant, "covered" means "covered by a command or backend gate" — a
+/// product can never satisfy this gate with a React-only guard.
+pub fn uncovered_product_keys(
+    registered: &[ProductKeyEntry],
+    entries: &[ProductCoverageEntry],
+) -> Vec<ProductFeatureKey> {
+    registered
+        .iter()
+        .filter(|reg| !entries.iter().any(|e| e.key == reg.key))
+        .map(|reg| reg.key.clone())
+        .collect()
+}
+
+/// The product-key registry: every product feature key a plugged-in module has
+/// declared. **This is where a product registers its gated keys** so the coverage
+/// gate counts them. The in-repo example module (`vault`) registers its key here;
+/// the #37 sample product appends its own.
+pub fn product_key_registry() -> Vec<ProductKeyEntry> {
+    vec![ProductKeyEntry {
+        key: ProductFeatureKey::new("vault", "share_record").expect("valid product key"),
+    }]
+}
+
+/// The product-key coverage manifest: every non-React gate test that proves a
+/// product feature key is enforced somewhere other than the screen. Mirrors
+/// [`coverage_manifest`] for the registered product keys.
+///
+/// The example module's `vault.share_record` is covered by the backend gate test
+/// `product_gate_denies_share_without_entitlement_and_allows_with_it` in
+/// `services/api/tests/product_module.rs`, run by `cargo test` in the same gate.
+pub fn product_coverage_manifest() -> Vec<ProductCoverageEntry> {
+    vec![ProductCoverageEntry {
+        key: ProductFeatureKey::new("vault", "share_record").expect("valid product key"),
+        layer: GateLayer::Backend,
+        test:
+            "api::product_module::product_gate_denies_share_without_entitlement_and_allows_with_it",
+    }]
+}
+
+/// The gate check for product keys: every registered product key must be covered
+/// by a non-React gate test. Returns `Ok(())` when complete, or an `Err` naming
+/// each uncovered product key by its wire string.
+pub fn evaluate_product_coverage(
+    registered: &[ProductKeyEntry],
+    entries: &[ProductCoverageEntry],
+) -> Result<(), String> {
+    let uncovered = uncovered_product_keys(registered, entries);
+    if uncovered.is_empty() {
+        return Ok(());
+    }
+    let names = uncovered
+        .iter()
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "{} product feature key(s) have no Tauri-command or backend gate test \
+         (React gating is UX only, ADR-0001): {names}",
+        uncovered.len()
+    ))
+}
+
+/// Run the full feature-key coverage gate: baseline keys AND product keys, each
+/// held to the same non-React-gate standard. This is the function the gate
+/// registry wires as a `Check`, so a product paid key without a gate test fails
+/// CI exactly as a baseline one would.
 pub fn run_feature_key_coverage() -> Result<(), String> {
-    evaluate_coverage(&FeatureKey::ALL, &coverage_manifest())
+    evaluate_coverage(&FeatureKey::ALL, &coverage_manifest())?;
+    evaluate_product_coverage(&product_key_registry(), &product_coverage_manifest())
 }
 
 /// The gate check: every key in `all_keys` must be covered by `entries`.
@@ -314,5 +408,118 @@ mod tests {
                 "every entry names the enforcing test"
             );
         }
+    }
+
+    // ---- #36: product-key coverage mirrors baseline-key coverage ----
+
+    fn product_key(name: &str) -> ProductFeatureKey {
+        ProductFeatureKey::new("vault", name).expect("valid product key")
+    }
+
+    fn registered(name: &str) -> ProductKeyEntry {
+        ProductKeyEntry {
+            key: product_key(name),
+        }
+    }
+
+    fn product_backend(name: &str) -> ProductCoverageEntry {
+        ProductCoverageEntry {
+            key: product_key(name),
+            layer: GateLayer::Backend,
+            test: "stub::product_backend_gate",
+        }
+    }
+
+    // --- ISC-12: a registered product key with no gate test is uncovered ---
+    #[test]
+    fn a_registered_product_key_with_no_gate_test_is_uncovered() {
+        let reg = [registered("share_record"), registered("max_vaults")];
+        let entries = [product_backend("share_record")]; // only one covered
+
+        let uncovered = uncovered_product_keys(&reg, &entries);
+
+        assert!(uncovered.contains(&product_key("max_vaults")));
+        assert!(!uncovered.contains(&product_key("share_record")));
+        assert_eq!(uncovered.len(), 1);
+    }
+
+    // --- ISC-13: a registered product key WITH a gate test is covered ---
+    #[test]
+    fn a_registered_product_key_with_a_gate_test_is_covered() {
+        let reg = [registered("share_record")];
+        let entries = [product_backend("share_record")];
+
+        assert_eq!(evaluate_product_coverage(&reg, &entries), Ok(()));
+        assert!(uncovered_product_keys(&reg, &entries).is_empty());
+    }
+
+    #[test]
+    fn evaluate_product_coverage_names_every_uncovered_product_key() {
+        let reg = [registered("share_record"), registered("max_vaults")];
+        let entries: [ProductCoverageEntry; 0] = [];
+
+        let err = evaluate_product_coverage(&reg, &entries).unwrap_err();
+
+        assert!(err.contains("vault.share_record"), "names uncovered: {err}");
+        assert!(err.contains("vault.max_vaults"), "names uncovered: {err}");
+    }
+
+    // --- ISC-14: the live product registry is fully covered ---
+    #[test]
+    fn the_live_product_registry_is_fully_covered() {
+        // Every registered product key must have a non-React gate test in the
+        // product coverage manifest — otherwise this fails, which is what fails CI.
+        assert_eq!(
+            evaluate_product_coverage(&product_key_registry(), &product_coverage_manifest()),
+            Ok(()),
+            "every registered product key must have a non-React gate test"
+        );
+    }
+
+    #[test]
+    fn full_coverage_run_includes_baseline_and_product_keys() {
+        // The wired gate check runs both halves; with the example registered, it
+        // must pass.
+        assert_eq!(run_feature_key_coverage(), Ok(()));
+    }
+
+    // --- #36 (advisor-hardening): the registry is the declaration; coverage is
+    // NOT opt-in-forgettable. A product key that lands in the registry but whose
+    // gate test is forgotten in the manifest is REPORTED uncovered, so CI goes
+    // red. This is the structural guarantee that a paid product key cannot
+    // silently escape the gate by omission — the same default-allow failure mode
+    // the baseline gate kills, killed one level up for product keys. ---
+    #[test]
+    fn a_registered_product_key_absent_from_the_manifest_fails_the_gate() {
+        // Simulate a product author who registered a paid key but forgot to record
+        // its gate test in the manifest.
+        let registry = [
+            registered("share_record"),
+            registered("forgot_to_cover"), // declared, but no manifest entry
+        ];
+        let manifest = product_coverage_manifest(); // covers only share_record
+
+        let err = evaluate_product_coverage(&registry, &manifest)
+            .expect_err("a registered-but-uncovered product key must fail the gate");
+        assert!(
+            err.contains("vault.forgot_to_cover"),
+            "the forgotten key is named so the author knows what to fix: {err}"
+        );
+    }
+
+    #[test]
+    fn the_example_key_is_in_both_the_registry_and_the_manifest() {
+        // Belt-and-suspenders for the seam's worked example: `vault.share_record`
+        // is declared in the registry AND covered in the manifest, so the live run
+        // is green for the right reason (covered), not because it was never seen.
+        let key = product_key("share_record");
+        assert!(
+            product_key_registry().iter().any(|e| e.key == key),
+            "example key is registered"
+        );
+        assert!(
+            product_coverage_manifest().iter().any(|e| e.key == key),
+            "example key has a recorded non-React gate test"
+        );
     }
 }

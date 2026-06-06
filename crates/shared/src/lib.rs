@@ -15,6 +15,9 @@ mod entitlements;
 mod feature_key;
 mod license;
 mod plan;
+mod product_entitlements;
+mod product_feature_key;
+mod product_module;
 mod sync_queue;
 
 pub use audit::{ActorKind, AuditEvent, Sensitivity};
@@ -24,6 +27,9 @@ pub use entitlements::{Entitlements, FeatureValue};
 pub use feature_key::FeatureKey;
 pub use license::LicenseToken;
 pub use plan::{PlanTier, SubscriptionStatus};
+pub use product_entitlements::ProductEntitlements;
+pub use product_feature_key::{ProductFeatureKey, ProductFeatureKeyError, NAMESPACE_SEPARATOR};
+pub use product_module::ProductModuleMeta;
 pub use sync_queue::{
     ConflictPolicy, ConflictResolution, OpStatus, RetryDecision, RetryPolicy, SyncOperation,
     SyncQueue, SyncQueueStore,

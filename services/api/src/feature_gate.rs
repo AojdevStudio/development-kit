@@ -26,7 +26,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 
-use shared::{Entitlements, FeatureKey};
+use shared::{Entitlements, FeatureKey, ProductEntitlements, ProductFeatureKey};
 
 use crate::auth::{resolve_principal, AuthError, PrincipalStore};
 use crate::entitlement::{resolve_entitlements, AccountStateStore};
@@ -43,6 +43,24 @@ pub fn parse_feature_key(token: &str) -> Option<FeatureKey> {
 /// caller, so it is unit-testable without a router and reusable by every gated
 /// endpoint.
 pub fn require_feature(entitlements: &Entitlements, feature: FeatureKey) -> Result<(), StatusCode> {
+    if entitlements.allows(feature) {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+/// The authority decision for a **product** feature key (issue #36 — product
+/// module seam). The product analogue of [`require_feature`]: pure over the
+/// product entitlements snapshot the backend computed, so a product module's
+/// gated routes ask exactly the same question (`does this account have X?`)
+/// against the same allow semantics. A product gate therefore can never be
+/// weaker than the spine's — and a product never re-derives access from plan
+/// names.
+pub fn require_product_feature(
+    entitlements: &ProductEntitlements,
+    feature: &ProductFeatureKey,
+) -> Result<(), StatusCode> {
     if entitlements.allows(feature) {
         Ok(())
     } else {
@@ -193,5 +211,38 @@ mod tests {
             assert_eq!(parse_feature_key(key.as_str()), Some(key));
         }
         assert_eq!(parse_feature_key("not_a_key"), None);
+    }
+
+    // --- #36: product-key gate mirrors the baseline gate ---
+    fn product_key(name: &str) -> ProductFeatureKey {
+        ProductFeatureKey::new("vault", name).expect("valid product key")
+    }
+
+    #[test]
+    fn require_product_feature_allows_an_enabled_product_key() {
+        let key = product_key("share_record");
+        let ent = ProductEntitlements::new("acct_test", "vault")
+            .with(key.clone(), FeatureValue::Enabled(true));
+        assert_eq!(require_product_feature(&ent, &key), Ok(()));
+    }
+
+    #[test]
+    fn require_product_feature_denies_a_missing_product_key() {
+        let ent = ProductEntitlements::new("acct_test", "vault");
+        assert_eq!(
+            require_product_feature(&ent, &product_key("share_record")),
+            Err(StatusCode::FORBIDDEN)
+        );
+    }
+
+    #[test]
+    fn require_product_feature_denies_a_zero_limit_product_key() {
+        let key = product_key("max_vaults");
+        let ent = ProductEntitlements::new("acct_test", "vault")
+            .with(key.clone(), FeatureValue::Limit(0));
+        assert_eq!(
+            require_product_feature(&ent, &key),
+            Err(StatusCode::FORBIDDEN)
+        );
     }
 }
