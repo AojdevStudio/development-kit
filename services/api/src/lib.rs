@@ -22,6 +22,7 @@ pub mod feature_gate;
 pub mod license;
 pub mod me;
 pub mod me_entitlements;
+pub mod pg_migration;
 pub mod principal;
 pub mod product_module;
 pub mod products;

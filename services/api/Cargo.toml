@@ -16,6 +16,10 @@ path = "src/lib.rs"
 
 [dependencies]
 shared = { workspace = true }
+# Typed error taxonomy for the Postgres migration runner (issue #64), mirroring
+# the local-store crate's thiserror-based error enum. Not a DB client: adds no
+# Postgres driver to the workspace (the runner is driver-agnostic).
+thiserror = { workspace = true }
 # Backend-only: holds the private signing key. Compile-fact proof that license
 # issuance lives here, not on the desktop (ADR-0002).
 license-sign = { workspace = true }
