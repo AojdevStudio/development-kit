@@ -66,6 +66,8 @@ The cloud backend decides:
 
 The backend may be built with Axum when an HTTP API is needed. The backend owns all Stripe secret key usage.
 
+**Payments-language seam.** The Rust backend owns the authority *decision* (who may pay, what they get, when to issue a license), but the money path itself runs on an officially-supported Stripe SDK language (Node or Go) as an isolated payments service the Rust backend calls over a defined boundary. Do not run the money path on a community Rust `async-stripe` release candidate. This is the one sanctioned non-Rust seam (per `TECHSTACKPREFERENCES.md`): Rust core, official-SDK language only at the vendor integration point.
+
 ### Cloud Database
 
 The cloud database stores durable SaaS state. Use Postgres by default.
@@ -495,6 +497,7 @@ Cloud API: Rust
 HTTP framework: Axum
 Database: Postgres
 Billing: Stripe Billing, Checkout, Customer Portal, webhooks
+Payments SDK seam: Node or Go (isolated service; never a community Rust async-stripe release candidate)
 Frontend tooling: Bun
 Rust tooling: Cargo
 ```

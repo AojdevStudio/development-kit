@@ -14,6 +14,9 @@ forces need a recorded decision:
    weakest reviewer unless it is a *compile fact*. The kit already encodes this as
    **capability crates** plus a mechanical crate-edge gate; this ADR records that
    decision so the many `(ADR-0002)` references in the code and gate have a home.
+   The full enforcement mechanism (gate scopes, CI, branch protection, feature-key
+   coverage) is detailed in its sibling ADR-0003 (mechanical authority-boundary
+   enforcement).
 
 2. **How a product plugs in without editing the foundation (issue #36).** The kit
    must accept many products on one spine. The platform vocabulary is closed for

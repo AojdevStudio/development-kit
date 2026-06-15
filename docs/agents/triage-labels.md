@@ -35,6 +35,21 @@ A `ready-for-agent` issue should also carry exactly one `model:*` label so an
 AFK agent knows which model to launch. If no model label is present, treat the
 task as needing a triage decision on model routing first.
 
+### Routing rule (risk-tiered)
+
+Route by horizon and risk, not by stack layer. Runtime is Claude Code (OAuth):
+`opus-4.8` is the session default, `sonnet-4.6` is selected via `/model`, and
+`gpt-5.5` runs as the Forge subagent via `codex`.
+
+- **`model:sonnet-4.6` (default).** Well-specified, bounded work: React screens, scoped SQLite/Postgres migrations, scoped tests, docs, single-slice product features. Most issues.
+- **`model:opus-4.8`.** The authority boundary itself (license sign/verify, entitlement engine, Stripe webhook idempotency, the feature-key coverage gate, the `xtask` gate and `cargo-deny` config), cross-cutting refactors, ADR-touching work, recovery from a stuck Sonnet run, and final review of security-sensitive PRs.
+- **`model:gpt-5.5` (Forge, cross-vendor).** Adversarial-verify lane on authority-critical PRs (entitlement, license, billing) to catch Anthropic-family blind spots. Usable as an alternate implementer on gnarly Rust only when explicitly named. Not a default implementer.
+
+Heuristic: if the issue touches the authority boundary, money, signing keys, or
+entitlement decisions, label `model:opus-4.8` and queue a `model:gpt-5.5` verify
+before merge. Otherwise label `model:sonnet-4.6`. See ADR-0002 for the enforcement
+architecture these models build and protect.
+
 To add a new model to the stack, create the label
 (`gh label create "model:<name>" --color <hex> --description "Route this task to <name>"`)
 and add a row above.
