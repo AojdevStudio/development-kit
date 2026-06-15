@@ -30,7 +30,10 @@ export class ShellConfigError extends Error {
  *
  * - `primaryProduct` unset → multi-product shell: generic chrome + product nav.
  * - `primaryProduct` set to a registered `namespace` → single-product shell: that
- *   product owns the root; no generic nav or chrome.
+ *   product owns the root, with no generic nav. Platform chrome is opt-in here via
+ *   `config.showPlatformChrome` (issue #66): when true the shell renders the kit's
+ *   minimal account/billing slot alongside the product root; default false keeps
+ *   the product owning the root completely.
  * - `primaryProduct` set to an unregistered namespace → `ShellConfigError` (fail
  *   fast; never a silent fallback or a blank root).
  *
@@ -67,6 +70,8 @@ export function resolveShellLayout(
     products,
     primaryProduct,
     showProductNav: false,
-    showPlatformChrome: false,
+    // Opt-in (issue #66): the product owns the root by default; an app can surface
+    // the kit's minimal account/billing slot by setting `showPlatformChrome: true`.
+    showPlatformChrome: config.showPlatformChrome ?? false,
   };
 }
