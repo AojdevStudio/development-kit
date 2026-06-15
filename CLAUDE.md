@@ -7,7 +7,7 @@ Reusable, agent-buildable foundation for desktop SaaS apps: Tauri v2 + React/Vit
 - `docs/TAURI-STRIPE-SAAS-ARCHITECTURE.md` — the authority model and non-negotiables.
 - `docs/DEVELOPMENT-KIT-GOAL-PRD.md` — the Persistent Build Goal, scope, deep modules, API surface, testing matrix, and acceptance criteria ("done" is defined here).
 - `docs/PRD-INTAKE-CONTRACT.md` — how a new product PRD plugs into the kit.
-- `docs/PRODUCT-MODULE-SEAM.md` — the `ProductModule` trait + conventions for how a product module plugs into all six dimensions (workflows, screens, tables, commands, feature keys, tests) without editing the foundation. See ADR-0002.
+- `docs/PRODUCT-MODULE-SEAM.md`: the product-module seam (`BackendModule` + `LocalModule` traits, plus `ProductModuleMeta`) for how a product plugs into all six dimensions (workflows, screens, tables, commands, feature keys, tests) without editing the foundation. See `docs/adr/0002-capability-crates-and-product-seam.md`.
 
 ## Target workspace layout
 
@@ -38,7 +38,7 @@ Tests target external behavior and authority boundaries, not private internals.
 
 ## Working with fast-moving dependencies
 
-Rust crates, Tauri v2, Stripe, React, and Vite all evolve past model training cutoffs — do not trust pretrained API memory for integration code. Verify against local sources first: `opensrc/` (see `~/AGENTS.md`), `node_modules`, and pinned crate versions (`cargo doc`). Fetch more with `npx opensrc <pkg>` (or `pypi:` / `crates:` prefixes).
+Rust crates, Tauri v2, Stripe, React, and Vite all evolve past model training cutoffs — do not trust pretrained API memory for integration code. Verify against local sources first: `opensrc/` (see `~/AGENTS.md`), `node_modules`, and pinned crate versions (`cargo doc`). Fetch more with `bunx opensrc <pkg>` (or `pypi:` / `crates:` prefixes).
 
 ## Tooling
 
@@ -50,7 +50,7 @@ Primary tracker: GitHub Issues — [AojdevStudio/development-kit](https://github
 
 ## Agent / model workflow
 
-Anthropic-first stack (per deep-research evaluation): Claude Sonnet as the default implementation model, escalating to Claude Opus for long-horizon refactors, recovery from stuck states, and final review of security-sensitive changes. `AGENTS.md` is a symlink to this file — edit `CLAUDE.md`, never maintain a divergent copy.
+Anthropic-first stack (per deep-research evaluation): Claude Sonnet as the default implementation model, escalating to Claude Opus for long-horizon refactors, recovery from stuck states, and final review of security-sensitive changes. When PAI orchestrates work in this repo, a cross-vendor `model:gpt-5.5` lane (Forge / Codex) handles adversarial review of authority-critical changes (see `docs/agents/triage-labels.md`). `AGENTS.md` is a symlink to this file — edit `CLAUDE.md`, never maintain a divergent copy.
 
 ## Agent skills
 
