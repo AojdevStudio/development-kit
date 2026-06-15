@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { MePanel } from "../Me";
 import { BillingPanel } from "../BillingPanel";
 import { AdvancedReportPanel } from "../AdvancedReportPanel";
+import { PlatformChromeSlot } from "./PlatformChromeSlot";
 import type { ShellLayout } from "./resolveShellLayout";
 
 /**
@@ -10,7 +11,10 @@ import type { ShellLayout } from "./resolveShellLayout";
  * `ShellLayout` (see `resolveShellLayout`):
  *
  *  - single-product → the primary product's root screen owns the surface: no
- *    generic product nav, no platform chrome. The product IS the app.
+ *    generic product nav. Platform chrome is opt-in (issue #66): when
+ *    `showPlatformChrome` is set, the kit's minimal account/billing slot
+ *    (`PlatformChromeSlot`) renders alongside the product root so billing stays
+ *    reachable; otherwise the product IS the app.
  *  - multi-product  → generic chrome (app header + platform panels) plus a product
  *    nav framing the active product's screen.
  *
@@ -30,14 +34,20 @@ interface ShellProps {
 
 export function Shell({ layout }: ShellProps) {
   if (layout.mode === "single-product" && layout.primaryProduct) {
-    // Single-product app: the product owns the root surface outright. This is the
-    // descriptor's showProductNav=false + showPlatformChrome=false made concrete —
-    // no generic nav, no platform panels, no kit wrapper. How a single-product app
-    // surfaces account/billing is intentionally left to the product for now;
-    // `ShellLayout.showPlatformChrome` is the seam for a future platform-chrome
-    // slot in single-product mode (see PR #65 review). We do NOT invent billing UI.
+    // Single-product app: the product owns the root surface. By default
+    // (showPlatformChrome=false) that is all there is — no generic nav, no kit
+    // wrapper, the product IS the app. When an app opts in (issue #66), the live
+    // `showPlatformChrome` flag drives the kit's minimal account/billing slot
+    // (`PlatformChromeSlot` = MePanel + BillingPanel) alongside the product root,
+    // so billing stays reachable. The slot only places existing authority-backed
+    // panels — it does NOT invent billing UI.
     const Root = layout.primaryProduct.Root;
-    return <Root />;
+    return (
+      <>
+        <Root />
+        {layout.showPlatformChrome && <PlatformChromeSlot token={DEV_TOKEN} />}
+      </>
+    );
   }
   return <MultiProductShell layout={layout} />;
 }

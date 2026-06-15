@@ -61,4 +61,41 @@ describe("resolveShellLayout", () => {
       /notes|orinsync/,
     );
   });
+
+  // Issue #66: in single-product mode, `showPlatformChrome` is opt-in via config so
+  // a single-product app can reach account/billing without forking the foundation.
+  // The flag now DRIVES the kit's platform-chrome slot (MePanel + BillingPanel)
+  // instead of being a dead seam.
+  it("drives the platform-chrome slot in single-product mode when opted in via config", () => {
+    const layout = resolveShellLayout(
+      { primaryProduct: "orinsync", showPlatformChrome: true },
+      registry,
+    );
+    expect(layout.mode).toBe("single-product");
+    expect(layout.showPlatformChrome).toBe(true);
+  });
+
+  it("keeps the slot off by default in single-product mode (product owns the root)", () => {
+    // #63's default is preserved: unless an app opts in, a single-product app shows
+    // no kit chrome — the product IS the app.
+    const layout = resolveShellLayout({ primaryProduct: "orinsync" }, registry);
+    expect(layout.mode).toBe("single-product");
+    expect(layout.showPlatformChrome).toBe(false);
+  });
+
+  it("honours an explicit showPlatformChrome:false in single-product mode", () => {
+    const layout = resolveShellLayout(
+      { primaryProduct: "orinsync", showPlatformChrome: false },
+      registry,
+    );
+    expect(layout.showPlatformChrome).toBe(false);
+  });
+
+  it("ignores showPlatformChrome in multi-product mode (chrome is always on there)", () => {
+    // The opt-in is a single-product concern; multi-product always renders chrome,
+    // even if a config carries the field.
+    const layout = resolveShellLayout({ showPlatformChrome: false }, registry);
+    expect(layout.mode).toBe("multi-product");
+    expect(layout.showPlatformChrome).toBe(true);
+  });
 });
