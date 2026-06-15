@@ -35,13 +35,33 @@ pub struct PgMigration {
     pub sql: &'static str,
 }
 
-/// Typed errors for the Postgres migration runner. Mirrors the
-/// `Migration(String)` variant of `local_store::error::LocalStoreError`.
+/// Typed errors for the Postgres migration runner.
+///
+/// Two failure classes, kept distinct so a caller (or operator) can tell a
+/// coding mistake apart from a runtime fault without string-matching:
+///
+/// - [`Misconfigured`](PgMigrationError::Misconfigured): the migration *set* is
+///   wrong — a duplicate version in a slice, or a product version missing its
+///   namespace prefix. Caught before any SQL runs; the fix is in code, not ops.
+/// - [`Migration`](PgMigrationError::Migration): applying a migration failed at
+///   runtime (bad SQL, executor/connection failure). Mirrors the
+///   `Migration(String)` variant of `local_store::error::LocalStoreError`.
+///
+/// The sqlx-backed executor that lands with the durable store is expected to add
+/// an `Executor(sqlx::Error)` variant for typed driver failures (deferred
+/// follow-up for #64); these two cover the runner's own failure modes today.
 #[derive(Debug, Error)]
 pub enum PgMigrationError {
-    /// A migration could not be applied (bad SQL, executor/connection failure).
+    /// A migration could not be applied at runtime (bad SQL, executor/connection
+    /// failure).
     #[error("migration error: {0}")]
     Migration(String),
+
+    /// The migration set is misconfigured by the author (duplicate version, or a
+    /// product version missing its `<namespace>_` prefix). Surfaced before any
+    /// SQL runs.
+    #[error("migration configuration error: {0}")]
+    Misconfigured(String),
 }
 
 /// Convenience result type for the runner.
@@ -88,16 +108,35 @@ pub trait PgExecutor {
 /// the runner only ever applies versions present in the passed slice, so it can
 /// never touch the baseline's or another product's tables.
 ///
-/// Rejects a slice that repeats a version (returns [`PgMigrationError::Migration`]
-/// before applying anything). Without this guard a duplicate would be silently
-/// skipped as "already applied" after its first sibling ran, so its SQL would
-/// never execute while the run still reported success: a silent data-loss footgun
-/// the shared `schema_migrations` ledger makes possible.
+/// Rejects a slice that repeats a version (returns
+/// [`PgMigrationError::Misconfigured`] before applying anything). Without this
+/// guard a duplicate would be silently skipped as "already applied" after its
+/// first sibling ran, so its SQL would never execute while the run still reported
+/// success: a silent data-loss footgun the shared `schema_migrations` ledger
+/// makes possible.
+///
+/// **For product migrations, call [`apply_module`](crate::product_module::apply_module)
+/// instead of this function.** `run_migrations` applies whatever slice it is
+/// given and does *not* enforce the `<namespace>_` prefix; only `apply_module`
+/// does. Passing a product's slice here directly bypasses that guard and
+/// re-opens the cross-product collision window the prefix enforcement exists to
+/// close. This function is public for the baseline/spine path and for the
+/// durable-store executor that will drive it; product code must go through
+/// `apply_module`.
 pub fn run_migrations<E: PgExecutor + ?Sized>(
     executor: &mut E,
     migrations: &[PgMigration],
 ) -> Result<usize> {
     reject_duplicate_versions(migrations)?;
+
+    // Nothing to do for an empty slice — and skipping ensure_ledger here avoids a
+    // redundant `CREATE TABLE IF NOT EXISTS schema_migrations` round-trip. It
+    // matters for apply_module, which calls run_migrations twice (baseline, then
+    // the product slice): a product with no migrations would otherwise re-ensure
+    // the ledger on every invocation against a real executor.
+    if migrations.is_empty() {
+        return Ok(0);
+    }
 
     // Bootstrapped by postgres/0001_init, but created defensively here so the
     // runner works against a brand-new database that has not run it yet.
@@ -121,7 +160,7 @@ pub(crate) fn reject_duplicate_versions(migrations: &[PgMigration]) -> Result<()
     let mut seen = std::collections::HashSet::with_capacity(migrations.len());
     for m in migrations {
         if !seen.insert(m.version) {
-            return Err(PgMigrationError::Migration(format!(
+            return Err(PgMigrationError::Misconfigured(format!(
                 "duplicate migration version '{}' in the slice",
                 m.version
             )));
@@ -320,7 +359,7 @@ mod tests {
             },
         ];
         match run_migrations(&mut exec, &dupes) {
-            Err(PgMigrationError::Migration(msg)) => assert!(msg.contains("duplicate")),
+            Err(PgMigrationError::Misconfigured(msg)) => assert!(msg.contains("duplicate")),
             other => panic!("expected duplicate-version error, got {other:?}"),
         }
         // Nothing was applied: the guard runs before any executor call.

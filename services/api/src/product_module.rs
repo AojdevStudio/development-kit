@@ -84,7 +84,7 @@ where
     let prefix = module.meta().table_prefix();
     for m in module.migrations() {
         if !m.version.starts_with(&prefix) {
-            return Err(PgMigrationError::Migration(format!(
+            return Err(PgMigrationError::Misconfigured(format!(
                 "product migration '{}' must start with the namespace prefix '{}' \
                  (the shared schema_migrations ledger is keyed on the raw version, \
                  so an unprefixed version collides with the baseline or another product)",
@@ -246,7 +246,7 @@ mod tests {
     fn unprefixed_product_version_is_rejected() {
         let mut exec = InMemoryPgExecutor::new();
         match apply_module(&mut exec, &UnprefixedProduct) {
-            Err(PgMigrationError::Migration(msg)) => {
+            Err(PgMigrationError::Misconfigured(msg)) => {
                 assert!(msg.contains("namespace prefix"), "got: {msg}");
             }
             other => panic!("expected a prefix-violation error, got {other:?}"),
