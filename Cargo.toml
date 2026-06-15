@@ -14,7 +14,7 @@ members = [
 # workspace so the dependency graph (ADR-0002) is verified in one place.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.82"
