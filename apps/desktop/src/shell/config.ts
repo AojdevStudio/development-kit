@@ -8,10 +8,16 @@
  *
  * Set `primaryProduct` to a registered product's `namespace` for a single-product
  * app — the shell then boots straight into that product's root screen, hiding the
- * generic product nav and platform chrome. A sole-product app (e.g. OrinSync) IS
- * the app, so its product owns the root surface:
+ * generic product nav AND the platform chrome (the account/billing panels). A
+ * sole-product app (e.g. OrinSync) IS the app, so its product owns the root surface:
  *
  *   export const shellConfig: ShellConfig = { primaryProduct: "orinsync" };
+ *
+ * Single-product mode deliberately surfaces no kit billing/account UI — a
+ * single-product app reaches account/subscription state through the same backend
+ * authority and surfaces it within its own product. A first-class platform-chrome
+ * slot for single-product mode is a deliberate follow-up (the `showPlatformChrome`
+ * field on `ShellLayout` is the seam for it); this issue does not invent billing UI.
  *
  * This is pure configuration + presentation. The product-module seam
  * (BackendModule, LocalModule, ProductFeatureKey, products/<ns>/ screens) is

@@ -49,15 +49,16 @@ describe("resolveShellLayout", () => {
     expect(() => resolveShellLayout({ primaryProduct: "ghost" }, registry)).toThrow(ShellConfigError);
   });
 
-  it("fails loudly on misconfiguration — never silently falls back to multi-product", () => {
-    // Anti-criterion: an unknown primary product must error, not render a blank
-    // root or quietly behave like the multi-product shell.
-    let threw = false;
-    try {
-      resolveShellLayout({ primaryProduct: "ghost" }, registry);
-    } catch {
-      threw = true;
-    }
-    expect(threw).toBe(true);
+  it("treats an empty-string primaryProduct as a misconfiguration, not as unset", () => {
+    // The `=== undefined` guard deliberately does NOT treat "" as unset, so an
+    // empty primaryProduct fails loudly rather than silently falling back to the
+    // multi-product shell — "" is the most likely real misconfiguration.
+    expect(() => resolveShellLayout({ primaryProduct: "" }, registry)).toThrow(ShellConfigError);
+  });
+
+  it("names the registered namespaces in the error so a misconfig is diagnosable", () => {
+    expect(() => resolveShellLayout({ primaryProduct: "ghost" }, registry)).toThrow(
+      /notes|orinsync/,
+    );
   });
 });

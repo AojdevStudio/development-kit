@@ -16,7 +16,9 @@ import type { ShellLayout } from "./resolveShellLayout";
  *
  * `<Shell>` is a thin consumer; the mode decision lives in the pure
  * `resolveShellLayout` function, which is unit-tested for both modes (vitest runs
- * in node with no DOM, so the testable logic stays out of the component).
+ * in node with no DOM, so the testable logic stays out of the component). The
+ * component renders strictly from the descriptor's `showProductNav` /
+ * `showPlatformChrome` flags — it never re-derives layout from `mode`.
  */
 
 /** Dev seed token recognised by the walking-skeleton backend store (real auth lands later). */
@@ -28,7 +30,12 @@ interface ShellProps {
 
 export function Shell({ layout }: ShellProps) {
   if (layout.mode === "single-product" && layout.primaryProduct) {
-    // Single-product app: the product owns the root surface, framed by nothing.
+    // Single-product app: the product owns the root surface outright. This is the
+    // descriptor's showProductNav=false + showPlatformChrome=false made concrete —
+    // no generic nav, no platform panels, no kit wrapper. How a single-product app
+    // surfaces account/billing is intentionally left to the product for now;
+    // `ShellLayout.showPlatformChrome` is the seam for a future platform-chrome
+    // slot in single-product mode (see PR #65 review). We do NOT invent billing UI.
     const Root = layout.primaryProduct.Root;
     return <Root />;
   }
@@ -54,11 +61,15 @@ function MultiProductShell({ layout }: ShellProps) {
 
   return (
     <main style={{ fontFamily: "system-ui", padding: "2rem" }}>
-      <h1>Development Kit</h1>
-      <p>Tauri desktop SaaS starter — walking skeleton.</p>
-      <p>
-        Tauri command says: <strong>{pong}</strong>
-      </p>
+      {layout.showPlatformChrome && (
+        <>
+          <h1>Development Kit</h1>
+          <p>Tauri desktop SaaS starter — walking skeleton.</p>
+          <p>
+            Tauri command says: <strong>{pong}</strong>
+          </p>
+        </>
+      )}
       {layout.showProductNav && (
         <nav aria-label="Products">
           {layout.products.map((product) => (
@@ -73,9 +84,13 @@ function MultiProductShell({ layout }: ShellProps) {
           ))}
         </nav>
       )}
-      <MePanel token={DEV_TOKEN} />
-      <BillingPanel token={DEV_TOKEN} />
-      <AdvancedReportPanel token={DEV_TOKEN} />
+      {layout.showPlatformChrome && (
+        <>
+          <MePanel token={DEV_TOKEN} />
+          <BillingPanel token={DEV_TOKEN} />
+          <AdvancedReportPanel token={DEV_TOKEN} />
+        </>
+      )}
       {ActiveRoot && <ActiveRoot />}
     </main>
   );
